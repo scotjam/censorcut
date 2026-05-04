@@ -4,6 +4,14 @@ A native C++ video editor for marking and removing scary scenes from kids' movie
 
 This repository contains the **M1 scaffold**: player + manual marker placement + sidecar JSON save/load. Export and analysis land in M2 and beyond. See [`docs/PLAN.md`](docs/PLAN.md) for the full project plan.
 
+## Disclaimer
+
+CensorCut is **not** designed to automatically take care of legal requirements as to what children can be shown, **nor is it a substitute for parental review**. It should only be used to further censor videos that are already legally able to be shown to children at the appropriate age.
+
+Automated detection (M3 and later milestones) may miss things, make mistakes, or hallucinate content that isn't there. It may also cut more than is necessary. The parent remains responsible for confirming every cut and for deciding whether the resulting edit is appropriate for their child.
+
+The software is provided **as is**, with no warranty of any kind. No responsibility can be taken for any data loss.
+
 ## Build prerequisites
 
 - **CMake 3.21+**

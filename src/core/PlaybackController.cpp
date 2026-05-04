@@ -3,6 +3,7 @@
 #include <QDebug>
 #include <QFileInfo>
 #include <QMetaObject>
+#include <QUrl>
 #include <Qt>
 
 #include <vlc/vlc.h>
@@ -82,10 +83,15 @@ bool PlaybackController::open(const QString& path)
         m_media = nullptr;
     }
 
-    const QByteArray utf8 = QFileInfo(path).absoluteFilePath().toUtf8();
-    m_media = libvlc_media_new_path(m_vlc, utf8.constData());
+    // Use libvlc_media_new_location with a file:// URL rather than
+    // libvlc_media_new_path: the latter does its own locale conversion on
+    // Windows which mangles UTF-8 input and refuses paths it can't round-trip.
+    // QUrl::fromLocalFile handles drive letters, UNC paths, and percent
+    // encoding correctly.
+    const QByteArray url = QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()).toEncoded();
+    m_media = libvlc_media_new_location(m_vlc, url.constData());
     if (!m_media) {
-        emit errorOccurred(QStringLiteral("libvlc_media_new_path failed for %1").arg(path));
+        emit errorOccurred(QStringLiteral("libvlc_media_new_location failed for %1").arg(path));
         return false;
     }
     libvlc_media_player_set_media(m_player, m_media);

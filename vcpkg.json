@@ -1,0 +1,13 @@
+{
+  "name": "censorcut",
+  "version-string": "0.1.0",
+  "description": "Mark and remove scary scenes from kids' movies",
+  "dependencies": [
+    "nlohmann-json",
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": ["gui", "widgets"]
+    }
+  ]
+}

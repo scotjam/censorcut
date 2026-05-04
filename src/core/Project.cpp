@@ -45,6 +45,22 @@ QString Project::sidecarPathFor(const QString& moviePath)
     return moviePath + QStringLiteral(".censorcut.json");
 }
 
+QString Project::censoredOutputPathFor(const QString& moviePath, int age)
+{
+    QFileInfo info(moviePath);
+    const QString dir   = info.path();               // preserve as-given; absolutePath() would prepend a drive on Windows for drive-relative paths
+    const QString stem  = info.completeBaseName();   // "Title" from "Title.mp4"; "Foo.Bar.2020" from "Foo.Bar.2020.mkv"
+    const QString ext   = info.suffix();             // "mp4" (no leading dot)
+
+    QString suffix = QStringLiteral(" CENSORED");
+    if (age > 0) suffix += QStringLiteral("-%1").arg(age);
+
+    QString name = stem + suffix;
+    if (!ext.isEmpty()) name += QLatin1Char('.') + ext;
+
+    return dir.isEmpty() ? name : dir + QLatin1Char('/') + name;
+}
+
 QString Project::computeSourceHash(const QString& moviePath)
 {
     QFile f(moviePath);
@@ -146,7 +162,7 @@ bool Project::saveToSidecar(const QString& sidecarPath, QString* errorOut) const
         return false;
     }
     if (!f.commit()) {
-        if (errorOut) *errorOut = QStringLiteral("Sidecar commit failed");
+        if (errorOut) *errorOut = QStringLiteral("Sidecar commit failed: %1").arg(f.errorString());
         return false;
     }
     return true;

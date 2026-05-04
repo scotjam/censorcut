@@ -34,6 +34,13 @@ struct Project {
     /// Returns "<movie>.censorcut.json" alongside the movie.
     static QString sidecarPathFor(const QString& moviePath);
 
+    /// Compute the output path for the censored copy.
+    /// Inserts " CENSORED-<age>" before the extension. For example:
+    ///   "/films/Title.mp4" with age 7 -> "/films/Title CENSORED-7.mp4"
+    /// If age <= 0 the suffix becomes just " CENSORED" (no number).
+    /// The original file is never touched; this only computes a path.
+    static QString censoredOutputPathFor(const QString& moviePath, int age);
+
     /// Compute the source hash (sha1 over first+last 1MB plus filesize).
     /// Returns empty string on I/O error.
     static QString computeSourceHash(const QString& moviePath);

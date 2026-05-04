@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <qwindowdefs.h>
 
 // libVLC opaque types — keep <vlc/vlc.h> out of the header to limit blast radius.
 struct libvlc_instance_t;

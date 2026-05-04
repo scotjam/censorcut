@@ -2,7 +2,7 @@
 #include "core/MarkerModel.h"
 #include "core/Project.h"
 
-#include <QTemporaryFile>
+#include <QTemporaryDir>
 #include <QtTest/QtTest>
 
 using namespace censorcut;
@@ -14,6 +14,7 @@ private slots:
     void confirmedAndCutTotal();
     void overlapMerging();
     void roundTripSidecar();
+    void censoredOutputPath();
 };
 
 void TestMarkerModel::addAndSort()
@@ -62,10 +63,9 @@ void TestMarkerModel::overlapMerging()
 
 void TestMarkerModel::roundTripSidecar()
 {
-    QTemporaryFile tmp;
-    QVERIFY(tmp.open());
-    tmp.close();
-    const QString path = tmp.fileName();
+    QTemporaryDir tmpDir;
+    QVERIFY(tmpDir.isValid());
+    const QString path = tmpDir.filePath(QStringLiteral("project.censorcut.json"));
 
     Project p;
     p.sourceFile = QStringLiteral("/tmp/example.mp4");
@@ -86,6 +86,31 @@ void TestMarkerModel::roundTripSidecar()
     QCOMPARE(loaded->markers.first().startMs, qint64{12000});
     QCOMPARE(loaded->markers.first().endMs,   qint64{18500});
     QCOMPARE(loaded->markers.first().category, QStringLiteral("Jump scare"));
+}
+
+void TestMarkerModel::censoredOutputPath()
+{
+    // Standard case: age suffixed onto the stem, extension preserved.
+    QCOMPARE(Project::censoredOutputPathFor(QStringLiteral("/films/Title.mp4"), 7),
+             QStringLiteral("/films/Title CENSORED-7.mp4"));
+
+    // Different age, different number.
+    QCOMPARE(Project::censoredOutputPathFor(QStringLiteral("/films/Title.mp4"), 4),
+             QStringLiteral("/films/Title CENSORED-4.mp4"));
+
+    // age <= 0 falls back to no number — useful for test cuts or "general" version.
+    QCOMPARE(Project::censoredOutputPathFor(QStringLiteral("/films/Title.mp4"), 0),
+             QStringLiteral("/films/Title CENSORED.mp4"));
+
+    // File with no extension still works.
+    const QString noExt = Project::censoredOutputPathFor(
+        QStringLiteral("/films/movie_no_ext"), 7);
+    QVERIFY(noExt.endsWith(QStringLiteral("movie_no_ext CENSORED-7")));
+
+    // Multi-dot filename: completeBaseName keeps the inner dots, only
+    // the final extension is restored after the suffix.
+    QCOMPARE(Project::censoredOutputPathFor(QStringLiteral("/films/Foo.Bar.2020.mkv"), 9),
+             QStringLiteral("/films/Foo.Bar.2020 CENSORED-9.mkv"));
 }
 
 QTEST_MAIN(TestMarkerModel)

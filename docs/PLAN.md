@@ -11,7 +11,7 @@ A native C++ video editor for marking and removing scary scenes from kids' movie
 - Play any common video file (mp4, mkv, avi, mov, webm)
 - Let the user mark cut ranges with frame-accurate start/end points while watching
 - Optionally auto-suggest cuts based on the watching child's age
-- Produce a new file `<original> CENSORED.<ext>` with marked sections removed; original is never touched
+- Produce a new file `<original> CENSORED-<age>.<ext>` with marked sections removed (where `<age>` is the youngest viewer the cut was tuned for, e.g. `Title CENSORED-7.mp4`); original is never touched
 - Save/load editing decisions as a sidecar so work can be resumed
 - Run fully offline on a single machine (Windows/macOS/Linux)
 
@@ -116,6 +116,8 @@ struct Project {
 The `sourceHash` lets the app warn if a sidecar is loaded against a different file. Storing raw `AnalysisResult` means thresholds can be re-tuned without re-running ML.
 
 **Sidecar location**: `<movie>.censorcut.json` next to the movie file (with fallback to app data when source folder is read-only).
+
+**Output naming**: `<base> CENSORED-<age>.<ext>` next to the original, where `<age>` is `Project::activeProfile.minAge`. This makes it visually obvious which cut is which when multiple ages are produced from the same source — e.g. `Title CENSORED-4.mp4` and `Title CENSORED-9.mp4` sit side-by-side in the folder. If the project's active profile is `15+` (effectively no cuts) or age is otherwise unset, the suffix collapses to just ` CENSORED` without a number. Computed by `Project::censoredOutputPathFor(moviePath, age)`.
 
 ---
 
@@ -289,7 +291,7 @@ Two-pass strategy:
 1. For each keep-segment, encode a temp file with input seeking + accurate cut:
    `ffmpeg -ss <start> -i input -to <duration> -c:v libx264 -crf 18 -preset medium -c:a aac -b:a 192k segN.mp4`
 2. Concat losslessly:
-   `ffmpeg -f concat -safe 0 -i list.txt -c copy "<base> CENSORED.<ext>"`
+   `ffmpeg -f concat -safe 0 -i list.txt -c copy "<base> CENSORED-<age>.<ext>"`
 
 Uses `-progress pipe:1` for parseable progress; UI shows percent and ETA. Writes to a temp directory; on success, moves the final file next to the original; on failure, cleans up. Never touches the source file. Refuses to start if output exists unless user confirms overwrite.
 

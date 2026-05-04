@@ -1,6 +1,6 @@
 # CensorCut
 
-A native C++ video editor for marking and removing scary scenes from kids' movies. Original file is never touched; output is written alongside as `<original> CENSORED.<ext>`.
+A native C++ video editor for marking and removing scary scenes from kids' movies. Original file is never touched; output is written alongside as `<original> CENSORED-<age>.<ext>` (e.g. `Title CENSORED-7.mp4`), so different cuts for different kids live side-by-side without confusion.
 
 This repository contains the **M1 scaffold**: player + manual marker placement + sidecar JSON save/load. Export and analysis land in M2 and beyond. See [`docs/PLAN.md`](docs/PLAN.md) for the full project plan.
 

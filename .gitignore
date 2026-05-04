@@ -65,7 +65,19 @@ venv/
 .censorcut-local/
 *.log
 
+# Local third-party SDK staging — libVLC is LGPL, not vendored.
+# Regenerate via the recipe in issue censorcut-repo-j8g.
+third_party/libvlc-sdk/
+third_party/_vlc_*/
+third_party/_*.bat
+third_party/vlc-*.zip
+third_party/vlc-*.7z
+third_party/vlc-*.tar.gz
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
 .beads-credential-key
+
+# Per-developer Claude Code permission cache
+.claude/settings.local.json

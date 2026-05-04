@@ -64,3 +64,8 @@ venv/
 # Local config / scratch
 .censorcut-local/
 *.log
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

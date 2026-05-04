@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "censorcut_repo",
+  "project_id": "5ccff2fb-de23-4c75-8acb-6bca53025ef8"
+}

@@ -45,6 +45,11 @@ private:
     QString currentMoviePath() const { return m_currentMoviePath; }
     void    updateStatusBar();
 
+    /// Returns true if the current marker state in the UI differs from
+    /// what's on disk in the sidecar (or there's no sidecar yet but the
+    /// user has placed markers). Reads the sidecar fresh each time.
+    bool    hasUnsavedChanges() const;
+
     // Core
     std::unique_ptr<PlaybackController> m_playback;
     MarkerModel*  m_markers      = nullptr;

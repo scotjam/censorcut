@@ -45,6 +45,11 @@ struct Project {
     /// Returns empty string on I/O error.
     static QString computeSourceHash(const QString& moviePath);
 
+    /// Canonical JSON serialization of the user-edited marker list, suitable
+    /// for equality comparison ("does the interface differ from the file?").
+    /// Excludes derived fields like sourceHash so it's stable across saves.
+    static QString markersFingerprint(const QList<Marker>& markers);
+
     /// Load a project from a sidecar JSON. Returns std::nullopt on failure.
     static std::optional<Project> loadFromSidecar(const QString& sidecarPath,
                                                   QString* errorOut = nullptr);

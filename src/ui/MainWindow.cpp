@@ -85,7 +85,7 @@ void MainWindow::buildUi()
     tLayout->addStretch(1);
 
     auto* hint = new QLabel(
-        QStringLiteral("[ start cut · ] end cut · ←/→ seek 5s · ,/. frame · J/K/L shuttle"),
+        QStringLiteral("[ start cut · ] end cut · Esc cancel pending · ←/→ seek 5s · ,/. frame · J/K/L shuttle"),
         transport);
     hint->setStyleSheet(QStringLiteral("color:#888;"));
     tLayout->addWidget(hint);
@@ -207,6 +207,14 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
         case Qt::Key_L:
             m_playback->setRate(std::min(4.0, m_playback->rate() * 2.0));
             return;
+        case Qt::Key_Escape:
+            if (m_pendingCutStartMs >= 0) {
+                m_pendingCutStartMs = -1;
+                m_timeline->setPendingCutStartMs(-1);
+                statusBar()->showMessage(QStringLiteral("Pending cut start cancelled."), 2000);
+                return;
+            }
+            break;
         default:
             break;
     }
@@ -215,10 +223,11 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    if (m_dirty && !m_currentMoviePath.isEmpty()) {
+    if (hasUnsavedChanges()) {
         const auto reply = QMessageBox::question(
             this, QStringLiteral("Unsaved markers"),
-            QStringLiteral("Save markers before closing?"),
+            QStringLiteral("The marker list differs from the sidecar on disk.\n"
+                           "Save markers before closing?"),
             QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
         if (reply == QMessageBox::Cancel) {
             event->ignore();
@@ -227,6 +236,28 @@ void MainWindow::closeEvent(QCloseEvent* event)
         if (reply == QMessageBox::Save) onSaveSidecar();
     }
     event->accept();
+}
+
+bool MainWindow::hasUnsavedChanges() const
+{
+    if (m_currentMoviePath.isEmpty()) return false;
+
+    const QString sidecar = Project::sidecarPathFor(m_currentMoviePath);
+    const QString liveFp  = Project::markersFingerprint(m_markers->markers());
+
+    QFileInfo info(sidecar);
+    if (!info.exists()) {
+        // No file yet — empty interface vs no file is "in sync"; any markers
+        // mean unsaved work.
+        return !m_markers->markers().isEmpty();
+    }
+
+    auto loaded = Project::loadFromSidecar(sidecar);
+    if (!loaded) {
+        // Couldn't parse what's on disk — be conservative and prompt.
+        return true;
+    }
+    return liveFp != Project::markersFingerprint(loaded->markers);
 }
 
 void MainWindow::onOpenFile()

@@ -61,6 +61,17 @@ QString Project::censoredOutputPathFor(const QString& moviePath, int age)
     return dir.isEmpty() ? name : dir + QLatin1Char('/') + name;
 }
 
+QString Project::markersFingerprint(const QList<Marker>& markers)
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& m : markers) {
+        nlohmann::json mj;
+        to_json(mj, m);
+        arr.push_back(mj);
+    }
+    return QString::fromStdString(arr.dump());
+}
+
 QString Project::computeSourceHash(const QString& moviePath)
 {
     QFile f(moviePath);

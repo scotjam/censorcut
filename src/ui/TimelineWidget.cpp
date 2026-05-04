@@ -3,11 +3,19 @@
 #include "core/Marker.h"
 #include "core/MarkerModel.h"
 
+#include <QAction>
+#include <QContextMenuEvent>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QtMath>
 
 namespace censorcut {
+
+namespace {
+constexpr int kEdgeGrabPx = 5;        // pixels around a marker edge that count as a grab
+constexpr int kBandHalfHeight = 12;   // marker band extends ±this from the vertical centre
+} // namespace
 
 TimelineWidget::TimelineWidget(QWidget* parent)
     : QWidget(parent)
@@ -15,6 +23,7 @@ TimelineWidget::TimelineWidget(QWidget* parent)
     setMinimumHeight(48);
     setMouseTracking(true);
     setAttribute(Qt::WA_OpaquePaintEvent);
+    setContextMenuPolicy(Qt::DefaultContextMenu);
 }
 
 void TimelineWidget::setModel(MarkerModel* model)
@@ -66,6 +75,26 @@ int TimelineWidget::msToX(qint64 ms) const
     return static_cast<int>(frac * width());
 }
 
+TimelineWidget::Hit TimelineWidget::hitTest(const QPoint& pos) const
+{
+    Hit hit;
+    if (!m_model || m_durationMs <= 0) return hit;
+
+    const int yMid = height() / 2;
+    if (pos.y() < yMid - kBandHalfHeight || pos.y() > yMid + kBandHalfHeight) return hit;
+
+    // Iterate in reverse so a marker drawn last (on top) wins ties.
+    const auto& markers = m_model->markers();
+    for (auto it = markers.crbegin(); it != markers.crend(); ++it) {
+        const int x1 = msToX(it->startMs);
+        const int x2 = msToX(it->endMs);
+        if (std::abs(pos.x() - x1) <= kEdgeGrabPx) { hit.id = it->id; hit.edge = Edge::Start; return hit; }
+        if (std::abs(pos.x() - x2) <= kEdgeGrabPx) { hit.id = it->id; hit.edge = Edge::End;   return hit; }
+        if (pos.x() > x1 && pos.x() < x2)          { hit.id = it->id; hit.body = true;        return hit; }
+    }
+    return hit;
+}
+
 void TimelineWidget::paintEvent(QPaintEvent*)
 {
     QPainter p(this);
@@ -89,7 +118,7 @@ void TimelineWidget::paintEvent(QPaintEvent*)
                 case Status::Rejected:  c = QColor(0x66, 0x66, 0x66, 120); break;  // grey
             }
             p.setBrush(c);
-            p.drawRect(x1, height() / 2 - 12, w, 24);
+            p.drawRect(x1, height() / 2 - kBandHalfHeight, w, 2 * kBandHalfHeight);
         }
     }
 
@@ -100,7 +129,7 @@ void TimelineWidget::paintEvent(QPaintEvent*)
         p.drawLine(x, 4, x, height() - 4);
         p.setBrush(QColor(0xFF, 0xC8, 0x4D, 60));
         p.setPen(Qt::NoPen);
-        p.drawRect(x, height() / 2 - 12, msToX(m_positionMs) - x, 24);
+        p.drawRect(x, height() / 2 - kBandHalfHeight, msToX(m_positionMs) - x, 2 * kBandHalfHeight);
     }
 
     // Playhead
@@ -113,15 +142,88 @@ void TimelineWidget::paintEvent(QPaintEvent*)
 
 void TimelineWidget::mousePressEvent(QMouseEvent* event)
 {
-    if (event->button() == Qt::LeftButton && m_durationMs > 0) {
-        emit scrubbed(xToMs(event->pos().x()));
+    if (event->button() != Qt::LeftButton || m_durationMs <= 0) return;
+
+    const Hit hit = hitTest(event->pos());
+    if (hit.edge != Edge::None) {
+        m_dragId   = hit.id;
+        m_dragEdge = hit.edge;
+        return;  // start an edge-drag; don't scrub
     }
+    emit scrubbed(xToMs(event->pos().x()));
 }
 
 void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
 {
-    if ((event->buttons() & Qt::LeftButton) && m_durationMs > 0) {
+    if (m_durationMs <= 0) return;
+
+    if (m_dragEdge != Edge::None && (event->buttons() & Qt::LeftButton) && m_model) {
+        auto m = m_model->findById(m_dragId);
+        if (!m) { m_dragEdge = Edge::None; return; }
+
+        const qint64 newMs = xToMs(event->pos().x());
+        Marker updated = *m;
+        if (m_dragEdge == Edge::Start) {
+            updated.startMs = std::clamp<qint64>(newMs, 0, updated.endMs - 1);
+        } else {
+            updated.endMs = std::clamp<qint64>(newMs, updated.startMs + 1,
+                                               m_durationMs > 0 ? m_durationMs : newMs);
+        }
+        m_model->updateMarkerById(m_dragId, updated);
+        return;
+    }
+
+    if (event->buttons() & Qt::LeftButton) {
         emit scrubbed(xToMs(event->pos().x()));
+        return;
+    }
+
+    // No buttons held — show a horizontal-resize cursor when hovering near an edge.
+    const Hit hover = hitTest(event->pos());
+    setCursor(hover.edge != Edge::None ? Qt::SizeHorCursor : Qt::ArrowCursor);
+}
+
+void TimelineWidget::mouseReleaseEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton) {
+        m_dragEdge = Edge::None;
+        m_dragId = QUuid();
+    }
+}
+
+void TimelineWidget::contextMenuEvent(QContextMenuEvent* event)
+{
+    if (!m_model || m_durationMs <= 0) return;
+    const Hit hit = hitTest(event->pos());
+    if (hit.id.isNull()) return;
+    showMarkerMenu(hit.id, event->globalPos());
+    event->accept();
+}
+
+void TimelineWidget::showMarkerMenu(const QUuid& id, const QPoint& globalPos)
+{
+    auto opt = m_model->findById(id);
+    if (!opt) return;
+    const Marker m = *opt;
+
+    QMenu menu(this);
+    QAction* confirm = menu.addAction(tr("Confirm"));
+    QAction* reject  = menu.addAction(tr("Reject"));
+    menu.addSeparator();
+    QAction* del     = menu.addAction(tr("Delete cut"));
+
+    confirm->setEnabled(m.status != Status::Confirmed);
+    reject->setEnabled(m.status != Status::Rejected);
+
+    QAction* chosen = menu.exec(globalPos);
+    if (!chosen) return;
+
+    if (chosen == del) {
+        m_model->removeMarkerById(id);
+    } else if (chosen == confirm || chosen == reject) {
+        Marker updated = m;
+        updated.status = (chosen == confirm) ? Status::Confirmed : Status::Rejected;
+        m_model->updateMarkerById(id, updated);
     }
 }
 

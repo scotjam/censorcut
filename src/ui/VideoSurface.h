@@ -13,6 +13,7 @@ public:
 
 protected:
     QPaintEngine* paintEngine() const override { return nullptr; }
+    void mousePressEvent(QMouseEvent* event) override;
 };
 
 } // namespace censorcut

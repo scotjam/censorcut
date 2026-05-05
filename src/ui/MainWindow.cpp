@@ -89,6 +89,7 @@ void MainWindow::buildUi()
     m_playButton = new QPushButton(QStringLiteral("Play"), transport);
     // Note: spacebar is handled in keyPressEvent so it works regardless of which
     // child widget has focus (the marker list, the timeline, etc).
+    m_playButton->setFocusPolicy(Qt::NoFocus);
     tLayout->addWidget(m_playButton);
 
     m_timeLabel = new QLabel(QStringLiteral("00:00:00.000 / 00:00:00.000"), transport);
@@ -97,6 +98,7 @@ void MainWindow::buildUi()
     m_previewCheck = new QCheckBox(QStringLiteral("Preview cuts"), transport);
     m_previewCheck->setToolTip(QStringLiteral(
         "When on, playback skips past confirmed cut markers so you can preview the result."));
+    m_previewCheck->setFocusPolicy(Qt::NoFocus);
     tLayout->addWidget(m_previewCheck);
 
     tLayout->addStretch(1);

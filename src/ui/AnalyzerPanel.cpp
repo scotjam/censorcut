@@ -38,6 +38,11 @@ AnalyzerPanel::AnalyzerPanel(MarkerModel* markers, QWidget* parent)
     m_runBtn    = new QPushButton(tr("Run analysis"), this);
     m_cancelBtn = new QPushButton(tr("Cancel"), this);
     m_cancelBtn->setVisible(false);
+    // NoFocus so clicking these doesn't trap keyboard focus and break the
+    // transport keys (Space play, arrows seek, etc.) for the rest of the
+    // editing session.
+    m_runBtn->setFocusPolicy(Qt::NoFocus);
+    m_cancelBtn->setFocusPolicy(Qt::NoFocus);
     btnRow->addWidget(m_runBtn);
     btnRow->addWidget(m_cancelBtn);
     btnRow->addStretch(1);
@@ -78,6 +83,11 @@ AnalyzerPanel::AnalyzerPanel(MarkerModel* markers, QWidget* parent)
         m_age = age;
         describeProfile();
         emit ageChanged(age);
+    });
+    // After the user presses Enter or tabs out, give focus back to the top
+    // level so transport keys (Space, ←/→, J/K/L) work again.
+    connect(m_ageSpin, &QSpinBox::editingFinished, this, [this]{
+        if (auto* w = window()) w->setFocus(Qt::OtherFocusReason);
     });
 
     describeProfile();

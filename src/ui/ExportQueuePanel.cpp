@@ -73,6 +73,9 @@ ExportQueuePanel::Row* ExportQueuePanel::ensureRow(int jobId)
     row.progress->setMaximumWidth(220);
     row.progress->setTextVisible(true);
     row.action = new QPushButton(row.frame);
+    // Don't trap focus when clicked — keeps the transport keys working
+    // after interacting with the export queue.
+    row.action->setFocusPolicy(Qt::NoFocus);
 
     h->addWidget(row.title);
     h->addWidget(row.phase, /*stretch=*/1);

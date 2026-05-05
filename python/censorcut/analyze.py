@@ -46,29 +46,59 @@ def probe_duration_ms(input_path: str) -> int:
     return int(duration * 1000)
 
 
-def _try_run_yamnet(input_path: str,
-                    duration_ms: int,
-                    labels: List[str],
-                    progress) -> Optional[DetectorOutput]:
-    """Run the YAMNet detector if its dependencies and model are available.
-    Returns None if anything is missing — analyze.py degrades gracefully and
-    writes a stderr note for the user."""
+def _try_run_yamnet(input_path, duration_ms, labels, progress):
+    """Run the YAMNet detector if its dependencies and model are available."""
     try:
         from .detectors import audio_label  # noqa: WPS433
-    except Exception as e:  # pragma: no cover — import-time failure path
-        print(f"censorcut.analyze: YAMNet detector module not loadable: {e}",
-              file=sys.stderr)
+    except Exception as e:  # pragma: no cover
+        print(f"censorcut.analyze: YAMNet module not loadable: {e}", file=sys.stderr)
         return None
     try:
-        return audio_label.run(input_path,
-                               duration_ms=duration_ms,
-                               labels=labels,
-                               progress=progress)
+        return audio_label.run(input_path, duration_ms=duration_ms,
+                               labels=labels, progress=progress)
     except audio_label.YamnetUnavailable as e:
         print(f"censorcut.analyze: YAMNet not available — {e}", file=sys.stderr)
         return None
     except Exception as e:
         print(f"censorcut.analyze: YAMNet pass failed: {e}", file=sys.stderr)
+        return None
+
+
+def _try_run_clip(input_path, duration_ms, prompts, progress):
+    """Run CLIP zero-shot scoring if torch+open_clip+model are available."""
+    try:
+        from .detectors import vision_clip  # noqa: WPS433
+    except Exception as e:
+        print(f"censorcut.analyze: vision_clip module not loadable: {e}",
+              file=sys.stderr)
+        return None
+    try:
+        return vision_clip.run(input_path, duration_ms=duration_ms,
+                               prompts=prompts, progress=progress)
+    except vision_clip.ClipUnavailable as e:
+        print(f"censorcut.analyze: CLIP not available — {e}", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"censorcut.analyze: CLIP pass failed: {e}", file=sys.stderr)
+        return None
+
+
+def _try_run_whisper(input_path, duration_ms, keywords, progress):
+    """Run Whisper transcription + keyword-spotting if available."""
+    try:
+        from .detectors import dialogue_whisper  # noqa: WPS433
+    except Exception as e:
+        print(f"censorcut.analyze: dialogue_whisper module not loadable: {e}",
+              file=sys.stderr)
+        return None
+    try:
+        return dialogue_whisper.run(input_path, duration_ms=duration_ms,
+                                    keywords=keywords, progress=progress)
+    except dialogue_whisper.WhisperUnavailable as e:
+        print(f"censorcut.analyze: Whisper not available — {e}", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"censorcut.analyze: Whisper pass failed: {e}", file=sys.stderr)
         return None
 
 
@@ -87,6 +117,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "data/default_categories.json")
     parser.add_argument("--no-yamnet", action="store_true",
                         help="Skip the YAMNet pass even if it's installed")
+    parser.add_argument("--no-clip", action="store_true",
+                        help="Skip the CLIP vision pass even if installed")
+    parser.add_argument("--no-whisper", action="store_true",
+                        help="Skip the Whisper dialogue pass even if installed")
     args = parser.parse_args(argv)
 
     input_path = args.input
@@ -136,14 +170,46 @@ def main(argv: Optional[List[str]] = None) -> int:
     yamnet_labels = cat_mod.required_labels(categories, detector_id="audio.yamnet")
     yamnet_used = False
     if yamnet_labels and not args.no_yamnet:
-        emit_progress(0.4, "yamnet")
+        emit_progress(0.30, "yamnet")
         out = _try_run_yamnet(input_path, duration_ms, yamnet_labels,
                               progress=emit_progress)
         if out:
             series_by_key.update(out)
             yamnet_used = True
 
-    # 3) Fuse + emit suggestions per category.
+    # 3) CLIP vision pass — if available. Prompts are 'labels' under the
+    #    'vision.clip' detector id in each category recipe.
+    clip_prompts = cat_mod.required_labels(categories, detector_id="vision.clip")
+    # 'vision.clip' uses params.prompts (not labels) by convention; tolerate
+    # either spelling.
+    clip_prompts.extend([p for p in cat_mod.required_prompts(categories,
+                                                              detector_id="vision.clip")
+                         if p not in clip_prompts])
+    clip_used = False
+    if clip_prompts and not args.no_clip:
+        emit_progress(0.42, "clip")
+        out = _try_run_clip(input_path, duration_ms, clip_prompts,
+                            progress=emit_progress)
+        if out:
+            series_by_key.update(out)
+            clip_used = True
+
+    # 4) Whisper dialogue pass — if available.
+    dialogue_keywords = cat_mod.required_labels(categories,
+                                                 detector_id="dialogue.whisper")
+    dialogue_keywords.extend([k for k in cat_mod.required_prompts(categories,
+                                                                    detector_id="dialogue.whisper")
+                              if k not in dialogue_keywords])
+    whisper_used = False
+    if dialogue_keywords and not args.no_whisper:
+        emit_progress(0.55, "whisper")
+        out = _try_run_whisper(input_path, duration_ms, dialogue_keywords,
+                               progress=emit_progress)
+        if out:
+            series_by_key.update(out)
+            whisper_used = True
+
+    # 5) Fuse + emit suggestions per category.
     emit_progress(0.95, "fuse")
     all_suggestions: List[dict] = []
     for cat in categories:
@@ -171,6 +237,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "sourceFile":   str(Path(input_path).resolve()),
         "durationMs":   duration_ms,
         "yamnetUsed":   yamnet_used,
+        "clipUsed":     clip_used,
+        "whisperUsed":  whisper_used,
         "rawScores":    raw_scores_out,
         "suggestions":  all_suggestions,
     }

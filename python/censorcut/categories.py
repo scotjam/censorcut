@@ -46,8 +46,8 @@ def load_categories(path: Optional[Path] = None) -> List[dict]:
 
 def required_labels(categories: List[dict], detector_id: str = "audio.yamnet") -> List[str]:
     """Union of all label strings any enabled category needs from the named
-    detector. Used to pre-prune YAMNet's 521 outputs to just the labels we
-    actually care about."""
+    detector. Used to pre-prune YAMNet's 521 outputs (or CLIP prompts, or
+    Whisper keywords) to just what we actually care about."""
     seen: List[str] = []
     out: List[str] = []
     for cat in categories:
@@ -61,6 +61,26 @@ def required_labels(categories: List[dict], detector_id: str = "audio.yamnet") -
                 if lbl not in seen:
                     seen.append(lbl)
                     out.append(lbl)
+    return out
+
+
+def required_prompts(categories: List[dict], detector_id: str) -> List[str]:
+    """Same as required_labels but reads from params.prompts — convention
+    used by the CLIP detector for full-sentence text prompts. Reading both
+    keys lets the JSON files use whichever feels natural."""
+    seen: List[str] = []
+    out: List[str] = []
+    for cat in categories:
+        if not cat.get("enabled", True):
+            continue
+        for det in cat.get("detectors", []):
+            if det.get("id") != detector_id:
+                continue
+            prompts = det.get("params", {}).get("prompts", []) or []
+            for p in prompts:
+                if p not in seen:
+                    seen.append(p)
+                    out.append(p)
     return out
 
 
@@ -110,7 +130,10 @@ def fuse_category(category: dict,
     for det in category.get("detectors", []):
         det_id  = det.get("id")
         weight  = float(det.get("weight", 1.0))
-        labels  = det.get("params", {}).get("labels", []) or []
+        params  = det.get("params", {})
+        # Accept either 'labels' (YAMNet, Whisper) or 'prompts' (CLIP) —
+        # treated identically as a label-keyed family.
+        labels  = (params.get("labels") or params.get("prompts") or [])
 
         # Two flavors:
         #   1. A direct series whose key IS det_id (e.g. "audio.lufs.jump").

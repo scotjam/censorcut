@@ -37,6 +37,92 @@ bool isTextSubtitleCodec(const QString& codec)
     return kTextCodecs.contains(codec.toLower());
 }
 
+/// Map ISO 639-1 (2-letter) to 639-2 (3-letter) for the most common
+/// languages. Pass-through for codes already 3 chars or for unknown
+/// inputs — both ffmpeg and modern containers are tolerant about that.
+QString normalizeLanguageCode(const QString& raw)
+{
+    if (raw.isEmpty()) return raw;
+    const QString lc = raw.toLower();
+    if (lc.size() != 2) return lc;
+    static const QHash<QString, QString> map = {
+        {"en","eng"},{"es","spa"},{"fr","fra"},{"de","deu"},
+        {"it","ita"},{"pt","por"},{"ja","jpn"},{"zh","zho"},
+        {"ru","rus"},{"ar","ara"},{"ko","kor"},{"nl","nld"},
+        {"hi","hin"},{"tr","tur"},{"pl","pol"},{"sv","swe"},
+        {"no","nor"},{"da","dan"},{"fi","fin"},{"cs","ces"},
+        {"el","ell"},{"he","heb"},{"hu","hun"},{"id","ind"},
+        {"ro","ron"},{"th","tha"},{"vi","vie"},{"uk","ukr"},
+        {"bg","bul"},{"hr","hrv"},{"sk","slk"},{"sl","slv"},
+        {"et","est"},{"lv","lav"},{"lt","lit"},{"ca","cat"},
+        {"ms","msa"},{"fa","fas"},{"bn","ben"},{"ta","tam"},
+        {"te","tel"},{"ml","mal"},{"mr","mar"},{"ur","urd"},
+    };
+    return map.value(lc, lc);
+}
+
+QString languageDisplayName(const QString& iso2or3)
+{
+    const QString c = iso2or3.toLower();
+    static const QHash<QString, QString> map = {
+        {"eng","English"},   {"spa","Spanish"},   {"fra","French"},
+        {"deu","German"},    {"ita","Italian"},   {"por","Portuguese"},
+        {"jpn","Japanese"},  {"zho","Chinese"},   {"chi","Chinese"},
+        {"rus","Russian"},   {"ara","Arabic"},    {"kor","Korean"},
+        {"nld","Dutch"},     {"hin","Hindi"},     {"tur","Turkish"},
+        {"pol","Polish"},    {"swe","Swedish"},   {"nor","Norwegian"},
+        {"dan","Danish"},    {"fin","Finnish"},   {"ces","Czech"},
+        {"ell","Greek"},     {"heb","Hebrew"},    {"hun","Hungarian"},
+        {"ind","Indonesian"},{"ron","Romanian"},  {"tha","Thai"},
+        {"vie","Vietnamese"},{"ukr","Ukrainian"}, {"bul","Bulgarian"},
+        {"hrv","Croatian"},  {"slk","Slovak"},    {"slv","Slovenian"},
+        {"est","Estonian"},  {"lav","Latvian"},   {"lit","Lithuanian"},
+        {"cat","Catalan"},   {"msa","Malay"},     {"fas","Persian"},
+        {"ben","Bengali"},   {"tam","Tamil"},     {"tel","Telugu"},
+        {"mal","Malayalam"}, {"mar","Marathi"},   {"urd","Urdu"},
+    };
+    return map.value(c, QString{});
+}
+
+/// Parse a sidecar filename like "Movie.en.forced.srt" into language +
+/// title hints. Returns (language ISO 639-2, title) — both may be empty.
+QPair<QString, QString> parseSidecarLanguage(const QString& sourceStem,
+                                             const QString& fileName)
+{
+    QString rest = fileName;
+    if (rest.startsWith(sourceStem)) rest = rest.mid(sourceStem.size());
+    if (!rest.isEmpty() && rest.at(0) == QLatin1Char('.')) rest = rest.mid(1);
+    const int lastDot = rest.lastIndexOf(QLatin1Char('.'));
+    if (lastDot > 0) rest = rest.left(lastDot);  // strip the file extension
+
+    if (rest.isEmpty()) return {QString{}, QString{}};
+
+    QString lang;
+    QStringList titleHints;
+    const QStringList parts = rest.split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    for (const QString& part : parts) {
+        const bool isAlpha = std::all_of(part.cbegin(), part.cend(),
+                                         [](QChar c) { return c.isLetter(); });
+        if (lang.isEmpty() && isAlpha
+            && (part.size() == 2 || part.size() == 3)) {
+            lang = normalizeLanguageCode(part);
+            continue;
+        }
+        titleHints.append(part);
+    }
+
+    QString title;
+    if (!lang.isEmpty()) {
+        const QString human = languageDisplayName(lang);
+        if (!human.isEmpty()) title = human;
+    }
+    if (!titleHints.isEmpty()) {
+        const QString hint = titleHints.join(QLatin1Char(' '));
+        title = title.isEmpty() ? hint : QStringLiteral("%1 (%2)").arg(title, hint);
+    }
+    return {lang, title};
+}
+
 QString subtitleCodecForContainer(const QString& destinationPath)
 {
     const QString suffix = QFileInfo(destinationPath).suffix().toLower();
@@ -91,7 +177,7 @@ bool ExportController::start(const Project& project,
     m_currentSegmentIdx = 0;
     m_cancelRequested   = false;
     m_textSubtitleStreams.clear();
-    m_cutSubtitleSrts.clear();
+    m_cutSubtitleTracks.clear();
     m_tempMuxedOutput.clear();
 
     const QString uniq = QStringLiteral("censorcut_export_%1")
@@ -111,9 +197,9 @@ bool ExportController::start(const Project& project,
     probeTextSubtitles();
     extractAndCutSubtitles();
     pickUpSidecarSubtitles();
-    if (!m_cutSubtitleSrts.isEmpty()) {
+    if (!m_cutSubtitleTracks.isEmpty()) {
         emit phaseChanged(QStringLiteral("Re-timed %1 subtitle track(s).")
-                              .arg(m_cutSubtitleSrts.size()));
+                              .arg(m_cutSubtitleTracks.size()));
     }
 
     disconnect(m_runner, nullptr, this, nullptr);
@@ -240,7 +326,7 @@ void ExportController::onConcatFinished(bool ok, const QString& stderrTail)
     }
 
     // If we collected re-timed subtitle tracks, mux them in before the move.
-    if (!m_cutSubtitleSrts.isEmpty()) {
+    if (!m_cutSubtitleTracks.isEmpty()) {
         runSubtitleMux();
         return;
     }
@@ -314,17 +400,38 @@ void ExportController::runSubtitleMux()
     // Concat output is the first input.
     args << QStringLiteral("-i") << m_tempOutput;
     // Each re-timed SRT becomes another input.
-    for (const QString& srt : m_cutSubtitleSrts) {
-        args << QStringLiteral("-i") << srt;
+    for (const CutSubtitleTrack& t : m_cutSubtitleTracks) {
+        args << QStringLiteral("-i") << t.srtPath;
     }
     // Take everything from the concat output (video + audio + chapters etc.).
     args << QStringLiteral("-map") << QStringLiteral("0");
     // Then map each SRT input as a subtitle stream.
-    for (int i = 0; i < m_cutSubtitleSrts.size(); ++i) {
+    for (int i = 0; i < m_cutSubtitleTracks.size(); ++i) {
         args << QStringLiteral("-map") << QString::number(i + 1);
     }
     args << QStringLiteral("-c") << QStringLiteral("copy");
     args << QStringLiteral("-c:s") << subtitleCodecForContainer(m_destination);
+
+    // Stamp language + title onto each subtitle output stream. The
+    // -metadata:s:s:N selector targets the Nth subtitle stream in the
+    // OUTPUT (zero-indexed). Since we map source 0 first (which carries
+    // its own subtitle streams, if any) and then our extracted SRTs in
+    // order, "our" subtitle outputs come after the passed-through ones.
+    // The concat output is built from re-encoded segments and won't
+    // carry source subtitle streams (we strip them when re-encoding),
+    // so the mapping is 0..N-1 of just our SRTs.
+    for (int i = 0; i < m_cutSubtitleTracks.size(); ++i) {
+        const auto& t = m_cutSubtitleTracks.at(i);
+        if (!t.language.isEmpty()) {
+            args << QStringLiteral("-metadata:s:s:%1").arg(i)
+                 << QStringLiteral("language=%1").arg(t.language);
+        }
+        if (!t.title.isEmpty()) {
+            args << QStringLiteral("-metadata:s:s:%1").arg(i)
+                 << QStringLiteral("title=%1").arg(t.title);
+        }
+    }
+
     args << QStringLiteral("-progress") << QStringLiteral("pipe:1");
     args << m_tempMuxedOutput;
 
@@ -337,7 +444,7 @@ void ExportController::runSubtitleMux()
             this, &ExportController::onRunnerFailed);
 
     emit phaseChanged(QStringLiteral("Adding %1 retimed subtitle track(s)…")
-                          .arg(m_cutSubtitleSrts.size()));
+                          .arg(m_cutSubtitleTracks.size()));
     m_phase = Phase::SubtitleMux;
     m_runner->setExpectedOutputDurationMs(m_totalDurationMs);
     if (!m_runner->start(args)) {
@@ -354,7 +461,8 @@ void ExportController::probeTextSubtitles()
     proc.start(ffprobe, {
         QStringLiteral("-v"), QStringLiteral("error"),
         QStringLiteral("-select_streams"), QStringLiteral("s"),
-        QStringLiteral("-show_entries"), QStringLiteral("stream=index,codec_name"),
+        QStringLiteral("-show_entries"),
+        QStringLiteral("stream=index,codec_name:stream_tags=language,title"),
         QStringLiteral("-of"), QStringLiteral("json"),
         m_project.sourceFile,
     });
@@ -374,11 +482,22 @@ void ExportController::probeTextSubtitles()
         const int idx = o.value(QStringLiteral("index")).toInt(-1);
         const QString codec = o.value(QStringLiteral("codec_name")).toString();
         if (idx < 0) continue;
-        if (isTextSubtitleCodec(codec)) {
-            m_textSubtitleStreams.append(idx);
-        } else {
-            ++skippedImage;
+        if (!isTextSubtitleCodec(codec)) { ++skippedImage; continue; }
+
+        SubtitleStreamInfo info;
+        info.index = idx;
+        info.codec = codec;
+        const QJsonObject tags = o.value(QStringLiteral("tags")).toObject();
+        info.language = normalizeLanguageCode(
+            tags.value(QStringLiteral("language")).toString());
+        info.title = tags.value(QStringLiteral("title")).toString();
+        // If we have a language code but no title, synthesize one for
+        // friendlier display in players that show titles.
+        if (info.title.isEmpty() && !info.language.isEmpty()) {
+            const QString human = languageDisplayName(info.language);
+            if (!human.isEmpty()) info.title = human;
         }
+        m_textSubtitleStreams.append(info);
     }
     if (skippedImage > 0) {
         emit phaseChanged(QStringLiteral(
@@ -390,7 +509,8 @@ void ExportController::probeTextSubtitles()
 bool ExportController::processOneSubtitleSource(const QString& ffmpegPath,
                                                 const QStringList& inputArgs,
                                                 int ordinal,
-                                                const QString& /*label*/)
+                                                const QString& language,
+                                                const QString& title)
 {
     const QString rawSrt = m_tempDir
         + QStringLiteral("/source_sub_%1.srt").arg(ordinal);
@@ -418,7 +538,12 @@ bool ExportController::processOneSubtitleSource(const QString& ffmpegPath,
 
     QString writeErr;
     if (!writeSrtFile(cutSrt, cut, &writeErr)) return false;
-    m_cutSubtitleSrts.append(cutSrt);
+
+    CutSubtitleTrack track;
+    track.srtPath  = cutSrt;
+    track.language = language;
+    track.title    = title;
+    m_cutSubtitleTracks.append(track);
     return true;
 }
 
@@ -427,16 +552,16 @@ void ExportController::extractAndCutSubtitles()
     const QString ffmpeg = FfmpegRunner::locateFfmpeg();
     if (ffmpeg.isEmpty()) return;
 
-    int ordinal = m_cutSubtitleSrts.size();
-    for (int streamIdx : m_textSubtitleStreams) {
+    int ordinal = m_cutSubtitleTracks.size();
+    for (const SubtitleStreamInfo& info : m_textSubtitleStreams) {
         const QStringList inputArgs = {
             QStringLiteral("-y"), QStringLiteral("-hide_banner"),
             QStringLiteral("-loglevel"), QStringLiteral("error"),
             QStringLiteral("-i"), m_project.sourceFile,
-            QStringLiteral("-map"), QStringLiteral("0:%1").arg(streamIdx),
+            QStringLiteral("-map"), QStringLiteral("0:%1").arg(info.index),
         };
-        const QString label = QStringLiteral("embedded stream %1").arg(streamIdx);
-        processOneSubtitleSource(ffmpeg, inputArgs, ordinal, label);
+        processOneSubtitleSource(ffmpeg, inputArgs, ordinal,
+                                 info.language, info.title);
         ++ordinal;
     }
 }
@@ -465,7 +590,7 @@ void ExportController::pickUpSidecarSubtitles()
     const QFileInfoList matches = srcDir.entryInfoList(
         nameFilters, QDir::Files | QDir::NoSymLinks, QDir::Name);
 
-    int ordinal = m_cutSubtitleSrts.size();
+    int ordinal = m_cutSubtitleTracks.size();
     for (const QFileInfo& fi : matches) {
         // Don't pick up the source file itself (it shouldn't match a
         // subtitle extension, but be safe).
@@ -476,8 +601,9 @@ void ExportController::pickUpSidecarSubtitles()
             QStringLiteral("-loglevel"), QStringLiteral("error"),
             QStringLiteral("-i"), fi.absoluteFilePath(),
         };
-        const QString label = fi.fileName();
-        if (processOneSubtitleSource(ffmpeg, inputArgs, ordinal, label)) {
+        const auto langTitle = parseSidecarLanguage(stem, fi.fileName());
+        if (processOneSubtitleSource(ffmpeg, inputArgs, ordinal,
+                                     langTitle.first, langTitle.second)) {
             ++ordinal;
         }
     }

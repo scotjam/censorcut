@@ -3,12 +3,33 @@
 #include "ExportPlan.h"
 #include "Project.h"
 
+#include <QList>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 namespace censorcut {
 
 class FfmpegRunner;
+
+/// Source-stream info for one text subtitle track. Captured by the
+/// up-front ffprobe pass (for embedded streams) or derived from the
+/// filename (for sidecars) so we can propagate language/title metadata
+/// into the muxed output.
+struct SubtitleStreamInfo {
+    int     index = -1;        // input stream index for embedded; -1 for sidecar
+    QString codec;             // "subrip", "ass", "mov_text", etc. — empty for sidecar
+    QString language;          // ISO 639-2 ("eng", "spa", ...) — empty if unknown
+    QString title;             // human-readable label, e.g. "English (Forced)"
+};
+
+/// One re-timed SRT ready to be muxed back into the cut output, plus the
+/// language/title we want to stamp on it.
+struct CutSubtitleTrack {
+    QString srtPath;
+    QString language;
+    QString title;
+};
 
 /// Drives the full export pipeline:
 ///   1. Compute plan (planExport)
@@ -86,13 +107,16 @@ private:
     /// convert to SRT, apply the cut plan, and append to m_cutSubtitleSrts.
     void pickUpSidecarSubtitles();
 
-    /// Convert any text subtitle file to SRT in m_tempDir, apply the cut
-    /// plan, and append the re-timed SRT to m_cutSubtitleSrts. Returns
-    /// false on any failure (caller can decide to log/continue).
+    /// Convert any text subtitle source (embedded stream or sidecar file)
+    /// to SRT in m_tempDir, apply the cut plan, and append the re-timed
+    /// track to m_cutSubtitleTracks with the supplied language/title
+    /// metadata. Returns false on any failure (caller can decide to
+    /// log/continue).
     bool processOneSubtitleSource(const QString& ffmpegPath,
                                   const QStringList& inputArgs,
                                   int ordinal,
-                                  const QString& label);
+                                  const QString& language,
+                                  const QString& title);
 
     Phase         m_phase   = Phase::Idle;
     Project       m_project;
@@ -107,8 +131,8 @@ private:
     qint64        m_doneDurationMs    = 0;
     bool          m_cancelRequested   = false;
 
-    QList<int>    m_textSubtitleStreams;        // indices in the source
-    QStringList   m_cutSubtitleSrts;            // SRT files in the temp dir
+    QList<SubtitleStreamInfo> m_textSubtitleStreams;   // embedded text streams
+    QList<CutSubtitleTrack>   m_cutSubtitleTracks;     // ready-to-mux SRTs
 
     FfmpegRunner* m_runner = nullptr;
 };

@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include "AnalyzerPanel.h"
 #include "ExportDialog.h"
 #include "ExportQueuePanel.h"
 #include "TimelineWidget.h"
@@ -119,13 +120,10 @@ void MainWindow::buildUi()
     m_markerList->setMinimumWidth(280);
     m_markerList->setContextMenuPolicy(Qt::CustomContextMenu);
 
-    auto* analyzerPlaceholder = new QLabel(
-        QStringLiteral("Analyzer panel — wired up in M3."), splitter);
-    analyzerPlaceholder->setAlignment(Qt::AlignCenter);
-    analyzerPlaceholder->setStyleSheet(QStringLiteral("color:#888; padding:24px;"));
+    m_analyzer = new AnalyzerPanel(m_markers, splitter);
 
     splitter->addWidget(m_markerList);
-    splitter->addWidget(analyzerPlaceholder);
+    splitter->addWidget(m_analyzer);
     splitter->setStretchFactor(1, 1);
     splitter->setMinimumHeight(200);
     mainLayout->addWidget(splitter);
@@ -325,6 +323,7 @@ void MainWindow::onOpenFile()
     m_pendingCutStartMs = -1;
     m_timeline->setPendingCutStartMs(-1);
     loadProjectFor(path);
+    m_analyzer->setMovie(path, m_playback->duration());
     m_playback->play();
 }
 
@@ -490,6 +489,8 @@ void MainWindow::onDurationKnown(qint64 ms)
     m_timeline->setDurationMs(ms);
     m_timeLabel->setText(QStringLiteral("%1 / %2")
                              .arg(formatTime(m_playback->position()), formatTime(ms)));
+    if (m_analyzer && !m_currentMoviePath.isEmpty())
+        m_analyzer->setMovie(m_currentMoviePath, ms);
 }
 
 void MainWindow::onPlayingStateChanged(bool playing)

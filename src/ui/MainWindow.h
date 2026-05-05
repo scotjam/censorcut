@@ -12,6 +12,7 @@ class QSlider;
 
 namespace censorcut {
 
+class AnalyzerPanel;
 class ExportQueue;
 class ExportQueuePanel;
 class MarkerModel;
@@ -66,6 +67,7 @@ private:
     QLabel*          m_timeLabel   = nullptr;
     QPushButton*     m_playButton   = nullptr;
     QCheckBox*       m_previewCheck = nullptr;
+    AnalyzerPanel*   m_analyzer     = nullptr;
     ExportQueuePanel* m_exportPanel = nullptr;
 
     // State

@@ -72,6 +72,10 @@ add_library(censorcut_core STATIC
     src/core/ExportController.cpp
     src/core/ExportQueue.h
     src/core/ExportQueue.cpp
+    src/core/AnalysisResult.h
+    src/core/AnalysisResult.cpp
+    src/core/AnalysisController.h
+    src/core/AnalysisController.cpp
 )
 target_include_directories(censorcut_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -99,6 +103,8 @@ qt_add_executable(censorcut
     src/ui/ExportDialog.cpp
     src/ui/ExportQueuePanel.h
     src/ui/ExportQueuePanel.cpp
+    src/ui/AnalyzerPanel.h
+    src/ui/AnalyzerPanel.cpp
 )
 target_link_libraries(censorcut PRIVATE
     censorcut_core

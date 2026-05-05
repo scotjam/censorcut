@@ -30,6 +30,10 @@ public:
     /// Returns an empty string if no ffmpeg is found.
     static QString locateFfmpeg();
 
+    /// Locate ffprobe alongside ffmpeg using the same heuristics. Empty
+    /// string if not found.
+    static QString locateFfprobe();
+
     void setFfmpegPath(const QString& path);
     QString ffmpegPath() const;
 

@@ -76,6 +76,8 @@ add_library(censorcut_core STATIC
     src/core/AnalysisResult.cpp
     src/core/AnalysisController.h
     src/core/AnalysisController.cpp
+    src/core/SubtitleProcessor.h
+    src/core/SubtitleProcessor.cpp
 )
 target_include_directories(censorcut_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -131,5 +133,9 @@ if(CENSORCUT_BUILD_TESTS)
         qt_add_executable(test_export_planner tests/test_export_planner.cpp)
         target_link_libraries(test_export_planner PRIVATE censorcut_core Qt6::Test)
         add_test(NAME export_planner COMMAND test_export_planner)
+
+        qt_add_executable(test_subtitle_processor tests/test_subtitle_processor.cpp)
+        target_link_libraries(test_subtitle_processor PRIVATE censorcut_core Qt6::Test)
+        add_test(NAME subtitle_processor COMMAND test_subtitle_processor)
     endif()
 endif()

@@ -64,6 +64,22 @@ QString FfmpegRunner::locateFfmpeg()
     return {};
 }
 
+QString FfmpegRunner::locateFfprobe()
+{
+    const QStringList candidates = {
+        QCoreApplication::applicationDirPath() + QStringLiteral("/third_party/ffmpeg/bin/ffprobe.exe"),
+        QCoreApplication::applicationDirPath() + QStringLiteral("/third_party/ffmpeg/bin/ffprobe"),
+        QCoreApplication::applicationDirPath() + QStringLiteral("/ffprobe.exe"),
+        QCoreApplication::applicationDirPath() + QStringLiteral("/ffprobe"),
+    };
+    for (const auto& path : candidates) {
+        if (QFileInfo::exists(path)) return QDir::toNativeSeparators(path);
+    }
+    const QString sys = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    if (!sys.isEmpty()) return sys;
+    return {};
+}
+
 void FfmpegRunner::setFfmpegPath(const QString& path)
 {
     m_ffmpegPath = path;

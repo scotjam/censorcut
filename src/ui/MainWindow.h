@@ -29,6 +29,7 @@ protected:
 private slots:
     void onOpenFile();
     void onSaveSidecar();
+    void onExportProject();
     void onMarkStart();
     void onMarkEnd();
     void onPositionChanged(qint64 ms);

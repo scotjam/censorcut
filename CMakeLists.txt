@@ -64,6 +64,12 @@ add_library(censorcut_core STATIC
     src/core/PlaybackController.cpp
     src/core/AgeProfile.h
     src/core/AgeProfile.cpp
+    src/core/ExportPlan.h
+    src/core/ExportPlan.cpp
+    src/core/FfmpegRunner.h
+    src/core/FfmpegRunner.cpp
+    src/core/ExportController.h
+    src/core/ExportController.cpp
 )
 target_include_directories(censorcut_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -87,6 +93,8 @@ qt_add_executable(censorcut
     src/ui/TimelineWidget.cpp
     src/ui/VideoSurface.h
     src/ui/VideoSurface.cpp
+    src/ui/ExportDialog.h
+    src/ui/ExportDialog.cpp
 )
 target_link_libraries(censorcut PRIVATE
     censorcut_core
@@ -109,5 +117,9 @@ if(CENSORCUT_BUILD_TESTS)
         qt_add_executable(test_marker_model tests/test_marker_model.cpp)
         target_link_libraries(test_marker_model PRIVATE censorcut_core Qt6::Test)
         add_test(NAME marker_model COMMAND test_marker_model)
+
+        qt_add_executable(test_export_planner tests/test_export_planner.cpp)
+        target_link_libraries(test_export_planner PRIVATE censorcut_core Qt6::Test)
+        add_test(NAME export_planner COMMAND test_export_planner)
     endif()
 endif()

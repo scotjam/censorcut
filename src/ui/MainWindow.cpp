@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include "ExportDialog.h"
 #include "TimelineWidget.h"
 #include "VideoSurface.h"
 #include "core/MarkerModel.h"
@@ -129,6 +130,10 @@ void MainWindow::buildMenus()
     auto* saveAction = fileMenu->addAction(QStringLiteral("&Save Markers"));
     saveAction->setShortcut(QKeySequence::Save);
     connect(saveAction, &QAction::triggered, this, &MainWindow::onSaveSidecar);
+
+    auto* exportAction = fileMenu->addAction(QStringLiteral("&Export Censored Cut..."));
+    exportAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
+    connect(exportAction, &QAction::triggered, this, &MainWindow::onExportProject);
 
     fileMenu->addSeparator();
     auto* quitAction = fileMenu->addAction(QStringLiteral("&Quit"));
@@ -328,6 +333,32 @@ void MainWindow::onSaveSidecar()
     }
     m_dirty = false;
     statusBar()->showMessage(QStringLiteral("Saved %1").arg(sidecar), 3000);
+}
+
+void MainWindow::onExportProject()
+{
+    if (m_currentMoviePath.isEmpty()) {
+        QMessageBox::information(this, tr("Nothing to export"),
+                                 tr("Open a movie first."));
+        return;
+    }
+
+    Project p;
+    p.sourceFile    = m_currentMoviePath;
+    p.sourceHash    = Project::computeSourceHash(m_currentMoviePath);
+    p.durationMs    = m_playback->duration();
+    p.markers       = m_markers->markers();
+    p.activeProfile = AgeProfile::forAge(8);  // M1: no UI for age yet — use default
+
+    if (p.durationMs <= 0) {
+        QMessageBox::warning(this, tr("Cannot export"),
+                             tr("The video duration isn't known yet — let it load fully and try again."));
+        return;
+    }
+
+    ExportDialog dlg(this);
+    dlg.setProject(p);
+    dlg.exec();
 }
 
 void MainWindow::onMarkStart()

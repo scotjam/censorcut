@@ -5,10 +5,14 @@
 
 #include <QAction>
 #include <QContextMenuEvent>
+#include <QKeyEvent>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QWheelEvent>
 #include <QtMath>
+
+#include <algorithm>
 
 namespace censorcut {
 
@@ -24,6 +28,7 @@ TimelineWidget::TimelineWidget(QWidget* parent)
     setMouseTracking(true);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setContextMenuPolicy(Qt::DefaultContextMenu);
+    setFocusPolicy(Qt::StrongFocus);  // accept '0' to reset zoom when clicked on
 }
 
 void TimelineWidget::setModel(MarkerModel* model)
@@ -44,6 +49,20 @@ void TimelineWidget::setDurationMs(qint64 duration)
 {
     if (m_durationMs == duration) return;
     m_durationMs = duration;
+    // First time we learn the duration, fit the view to the whole video.
+    if (m_viewEndMs <= m_viewStartMs) {
+        m_viewStartMs = 0;
+        m_viewEndMs   = duration;
+    } else {
+        clampView();
+    }
+    update();
+}
+
+void TimelineWidget::resetZoom()
+{
+    m_viewStartMs = 0;
+    m_viewEndMs   = m_durationMs;
     update();
 }
 
@@ -63,16 +82,52 @@ void TimelineWidget::setPendingCutStartMs(qint64 ms)
 
 qint64 TimelineWidget::xToMs(int x) const
 {
-    if (m_durationMs <= 0 || width() <= 0) return 0;
+    if (m_viewEndMs <= m_viewStartMs || width() <= 0) return 0;
     const double frac = std::clamp(double(x) / width(), 0.0, 1.0);
-    return static_cast<qint64>(frac * m_durationMs);
+    return m_viewStartMs + static_cast<qint64>(frac * (m_viewEndMs - m_viewStartMs));
 }
 
 int TimelineWidget::msToX(qint64 ms) const
 {
-    if (m_durationMs <= 0) return 0;
-    const double frac = std::clamp(double(ms) / m_durationMs, 0.0, 1.0);
-    return static_cast<int>(frac * width());
+    if (m_viewEndMs <= m_viewStartMs) return 0;
+    const double frac = double(ms - m_viewStartMs) / double(m_viewEndMs - m_viewStartMs);
+    return static_cast<int>(std::clamp(frac, 0.0, 1.0) * width());
+}
+
+void TimelineWidget::clampView()
+{
+    if (m_durationMs <= 0) return;
+    const qint64 minSpan = 100;  // never let the view collapse below 0.1s
+    qint64 span = std::max<qint64>(minSpan, m_viewEndMs - m_viewStartMs);
+    span = std::min<qint64>(span, m_durationMs);
+    if (m_viewStartMs < 0) m_viewStartMs = 0;
+    if (m_viewStartMs + span > m_durationMs) m_viewStartMs = m_durationMs - span;
+    if (m_viewStartMs < 0) m_viewStartMs = 0;
+    m_viewEndMs = m_viewStartMs + span;
+}
+
+void TimelineWidget::zoomBy(double factor, int anchorX)
+{
+    if (m_durationMs <= 0) return;
+    const qint64 anchorMs = xToMs(anchorX);
+    const qint64 oldSpan  = std::max<qint64>(1, m_viewEndMs - m_viewStartMs);
+    qint64 newSpan = static_cast<qint64>(double(oldSpan) / factor);
+    newSpan = std::clamp<qint64>(newSpan, 100, m_durationMs);
+
+    // Keep the timestamp under the cursor stationary on screen.
+    const double anchorFrac = double(anchorX) / std::max(1, width());
+    m_viewStartMs = anchorMs - static_cast<qint64>(anchorFrac * newSpan);
+    m_viewEndMs   = m_viewStartMs + newSpan;
+    clampView();
+    update();
+}
+
+void TimelineWidget::panBy(qint64 deltaMs)
+{
+    m_viewStartMs += deltaMs;
+    m_viewEndMs   += deltaMs;
+    clampView();
+    update();
 }
 
 TimelineWidget::Hit TimelineWidget::hitTest(const QPoint& pos) const
@@ -105,9 +160,10 @@ void TimelineWidget::paintEvent(QPaintEvent*)
     p.setBrush(QColor(0x2D, 0x30, 0x37));
     p.drawRect(0, height() / 2 - 8, width(), 16);
 
-    // Markers
-    if (m_model && m_durationMs > 0) {
+    // Markers — skip ones that are entirely outside the visible view.
+    if (m_model && m_durationMs > 0 && m_viewEndMs > m_viewStartMs) {
         for (const auto& m : m_model->markers()) {
+            if (m.endMs <= m_viewStartMs || m.startMs >= m_viewEndMs) continue;
             const int x1 = msToX(m.startMs);
             const int x2 = msToX(m.endMs);
             const int w  = std::max(2, x2 - x1);
@@ -132,11 +188,29 @@ void TimelineWidget::paintEvent(QPaintEvent*)
         p.drawRect(x, height() / 2 - kBandHalfHeight, msToX(m_positionMs) - x, 2 * kBandHalfHeight);
     }
 
-    // Playhead
-    if (m_durationMs > 0) {
+    // Playhead (only if it's within the current view)
+    if (m_durationMs > 0 && m_positionMs >= m_viewStartMs && m_positionMs <= m_viewEndMs) {
         const int x = msToX(m_positionMs);
         p.setPen(QPen(QColor(0xF0, 0xF0, 0xF0), 2));
         p.drawLine(x, 0, x, height());
+    }
+
+    // Mini-map / zoom indicator across the very top (3 px high). Shows the
+    // visible window as a bright bar against the full-duration track.
+    if (m_durationMs > 0 && (m_viewStartMs > 0 || m_viewEndMs < m_durationMs)) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x40, 0x44, 0x4C));
+        p.drawRect(0, 0, width(), 3);
+        const double s = double(m_viewStartMs) / double(m_durationMs);
+        const double e = double(m_viewEndMs)   / double(m_durationMs);
+        const int xs = int(s * width());
+        const int xe = int(e * width());
+        p.setBrush(QColor(0xFF, 0xC8, 0x4D));
+        p.drawRect(xs, 0, std::max(2, xe - xs), 3);
+
+        const double zoomLevel = double(m_durationMs) / std::max<qint64>(1, m_viewEndMs - m_viewStartMs);
+        p.setPen(QColor(0xFF, 0xC8, 0x4D));
+        p.drawText(width() - 60, 18, QStringLiteral("%1× zoom").arg(zoomLevel, 0, 'f', 1));
     }
 }
 
@@ -189,6 +263,41 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event)
         m_dragEdge = Edge::None;
         m_dragId = QUuid();
     }
+}
+
+void TimelineWidget::wheelEvent(QWheelEvent* event)
+{
+    if (m_durationMs <= 0) { event->ignore(); return; }
+    const int delta = event->angleDelta().y();
+    if (delta == 0) { event->ignore(); return; }
+
+    const auto mods = event->modifiers();
+    const QPoint pos = event->position().toPoint();
+
+    if (mods.testFlag(Qt::ControlModifier)) {
+        // Ctrl+wheel: zoom centred on cursor. 1.2x per notch (120 units).
+        const double factor = std::pow(1.2, double(delta) / 120.0);
+        zoomBy(factor, pos.x());
+        event->accept();
+    } else if (mods.testFlag(Qt::ShiftModifier)) {
+        // Shift+wheel: pan by ~10% of the visible span per notch.
+        const qint64 span = std::max<qint64>(1, m_viewEndMs - m_viewStartMs);
+        const qint64 step = static_cast<qint64>(span * 0.1);
+        panBy(delta > 0 ? -step : +step);
+        event->accept();
+    } else {
+        event->ignore();
+    }
+}
+
+void TimelineWidget::keyPressEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_0 && !event->modifiers().testFlag(Qt::ControlModifier)) {
+        resetZoom();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 void TimelineWidget::contextMenuEvent(QContextMenuEvent* event)

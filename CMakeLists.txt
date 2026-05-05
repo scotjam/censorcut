@@ -70,6 +70,8 @@ add_library(censorcut_core STATIC
     src/core/FfmpegRunner.cpp
     src/core/ExportController.h
     src/core/ExportController.cpp
+    src/core/ExportQueue.h
+    src/core/ExportQueue.cpp
 )
 target_include_directories(censorcut_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -95,6 +97,8 @@ qt_add_executable(censorcut
     src/ui/VideoSurface.cpp
     src/ui/ExportDialog.h
     src/ui/ExportDialog.cpp
+    src/ui/ExportQueuePanel.h
+    src/ui/ExportQueuePanel.cpp
 )
 target_link_libraries(censorcut PRIVATE
     censorcut_core

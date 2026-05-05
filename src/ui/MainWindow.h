@@ -6,11 +6,14 @@
 
 class QListView;
 class QLabel;
+class QCheckBox;
 class QPushButton;
 class QSlider;
 
 namespace censorcut {
 
+class ExportQueue;
+class ExportQueuePanel;
 class MarkerModel;
 class PlaybackController;
 class TimelineWidget;
@@ -54,18 +57,22 @@ private:
     // Core
     std::unique_ptr<PlaybackController> m_playback;
     MarkerModel*  m_markers      = nullptr;
+    ExportQueue*  m_exportQueue  = nullptr;
 
     // UI
     VideoSurface*    m_video       = nullptr;
     TimelineWidget*  m_timeline    = nullptr;
     QListView*       m_markerList  = nullptr;
     QLabel*          m_timeLabel   = nullptr;
-    QPushButton*     m_playButton  = nullptr;
+    QPushButton*     m_playButton   = nullptr;
+    QCheckBox*       m_previewCheck = nullptr;
+    ExportQueuePanel* m_exportPanel = nullptr;
 
     // State
     QString m_currentMoviePath;
     qint64  m_pendingCutStartMs = -1;  // -1 = no pending start
     bool    m_dirty = false;
+    bool    m_previewMode = false;
 };
 
 } // namespace censorcut

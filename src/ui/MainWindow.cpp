@@ -1,13 +1,18 @@
 #include "MainWindow.h"
 
 #include "ExportDialog.h"
+#include "ExportQueuePanel.h"
 #include "TimelineWidget.h"
 #include "VideoSurface.h"
+#include "core/ExportQueue.h"
 #include "core/MarkerModel.h"
 #include "core/PlaybackController.h"
 #include "core/Project.h"
 
 #include <QAction>
+#include <QCheckBox>
+#include <QDockWidget>
+#include <QSettings>
 #include <QCloseEvent>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -24,6 +29,8 @@
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <algorithm>
 
 namespace censorcut {
 
@@ -49,11 +56,12 @@ QString formatTime(qint64 ms)
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("CensorCut"));
+    setWindowTitle(QStringLiteral("CensorCut[*]"));
     resize(1200, 800);
 
-    m_playback = std::make_unique<PlaybackController>(this);
-    m_markers  = new MarkerModel(this);
+    m_playback     = std::make_unique<PlaybackController>(this);
+    m_markers      = new MarkerModel(this);
+    m_exportQueue  = new ExportQueue(this);
 
     buildUi();
     buildMenus();
@@ -78,15 +86,22 @@ void MainWindow::buildUi()
     auto* tLayout = new QHBoxLayout(transport);
     tLayout->setContentsMargins(8, 4, 8, 4);
     m_playButton = new QPushButton(QStringLiteral("Play"), transport);
-    m_playButton->setShortcut(Qt::Key_Space);
+    // Note: spacebar is handled in keyPressEvent so it works regardless of which
+    // child widget has focus (the marker list, the timeline, etc).
     tLayout->addWidget(m_playButton);
 
     m_timeLabel = new QLabel(QStringLiteral("00:00:00.000 / 00:00:00.000"), transport);
     tLayout->addWidget(m_timeLabel);
+
+    m_previewCheck = new QCheckBox(QStringLiteral("Preview cuts"), transport);
+    m_previewCheck->setToolTip(QStringLiteral(
+        "When on, playback skips past confirmed cut markers so you can preview the result."));
+    tLayout->addWidget(m_previewCheck);
+
     tLayout->addStretch(1);
 
     auto* hint = new QLabel(
-        QStringLiteral("[ start cut · ] end cut · Esc cancel pending · ←/→ seek 5s · ,/. frame · J/K/L shuttle"),
+        QStringLiteral("Space play · [ ] mark cut · Esc cancel · ←/→ 5s · Shift+←/→ 1s · Ctrl+←/→ frame · J/K/L shuttle"),
         transport);
     hint->setStyleSheet(QStringLiteral("color:#888;"));
     tLayout->addWidget(hint);
@@ -117,6 +132,14 @@ void MainWindow::buildUi()
 
     setCentralWidget(central);
     statusBar();
+
+    // Bottom dock: export queue panel.
+    m_exportPanel = new ExportQueuePanel(m_exportQueue, this);
+    auto* dock = new QDockWidget(QStringLiteral("Exports"), this);
+    dock->setObjectName(QStringLiteral("ExportsDock"));
+    dock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
+    dock->setWidget(m_exportPanel);
+    addDockWidget(Qt::BottomDockWidgetArea, dock);
 }
 
 void MainWindow::buildMenus()
@@ -183,19 +206,39 @@ void MainWindow::connectSignals()
     connect(m_markerList, &QWidget::customContextMenuRequested,
             this, &MainWindow::onMarkerListContextMenu);
 
-    connect(m_markers, &MarkerModel::markerAdded,   this, [this]{ m_dirty = true; updateStatusBar(); });
-    connect(m_markers, &MarkerModel::markerRemoved, this, [this]{ m_dirty = true; updateStatusBar(); });
-    connect(m_markers, &MarkerModel::markerChanged, this, [this]{ m_dirty = true; updateStatusBar(); });
+    auto markDirty = [this]{
+        m_dirty = true;
+        setWindowModified(true);
+        updateStatusBar();
+    };
+    connect(m_markers, &MarkerModel::markerAdded,   this, markDirty);
+    connect(m_markers, &MarkerModel::markerRemoved, this, markDirty);
+    connect(m_markers, &MarkerModel::markerChanged, this, markDirty);
+
+    connect(m_previewCheck, &QCheckBox::toggled, this, [this](bool on) {
+        m_previewMode = on;
+    });
 }
 
 void MainWindow::keyPressEvent(QKeyEvent* event)
 {
+    const auto mods = event->modifiers();
+    const bool shift = mods.testFlag(Qt::ShiftModifier);
+    const bool ctrl  = mods.testFlag(Qt::ControlModifier);
+
     switch (event->key()) {
+        case Qt::Key_Space:
+            m_playback->togglePlayPause();
+            return;
         case Qt::Key_Left:
-            m_playback->seekRelative(-5000);
+            if (ctrl)        m_playback->stepFrame(-1);
+            else if (shift)  m_playback->seekRelative(-1000);
+            else             m_playback->seekRelative(-5000);
             return;
         case Qt::Key_Right:
-            m_playback->seekRelative(+5000);
+            if (ctrl)        m_playback->stepFrame(+1);
+            else if (shift)  m_playback->seekRelative(+1000);
+            else             m_playback->seekRelative(+5000);
             return;
         case Qt::Key_Comma:
             m_playback->stepFrame(-1);
@@ -278,7 +321,7 @@ void MainWindow::onOpenFile()
         return;
     }
     m_currentMoviePath = path;
-    setWindowTitle(QStringLiteral("CensorCut — %1").arg(QFileInfo(path).fileName()));
+    setWindowTitle(QStringLiteral("CensorCut — %1[*]").arg(QFileInfo(path).fileName()));
     m_pendingCutStartMs = -1;
     m_timeline->setPendingCutStartMs(-1);
     loadProjectFor(path);
@@ -311,6 +354,7 @@ void MainWindow::loadProjectFor(const QString& moviePath)
     }
     m_markers->setMarkers(project->markers);
     m_dirty = false;
+    setWindowModified(false);
     updateStatusBar();
 }
 
@@ -332,6 +376,8 @@ void MainWindow::onSaveSidecar()
         return;
     }
     m_dirty = false;
+    setWindowModified(false);
+    updateStatusBar();
     statusBar()->showMessage(QStringLiteral("Saved %1").arg(sidecar), 3000);
 }
 
@@ -356,9 +402,33 @@ void MainWindow::onExportProject()
         return;
     }
 
+    // Auto-pause playback so audio doesn't keep playing during configuration.
+    if (m_playback->isPlaying()) m_playback->pause();
+
     ExportDialog dlg(this);
     dlg.setProject(p);
-    dlg.exec();
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    // Handle unsaved markers BEFORE the job is queued, so the sidecar that
+    // future loads see matches what the export was generated from.
+    if (hasUnsavedChanges()) {
+        if (dlg.autoSaveOnStart()) {
+            onSaveSidecar();
+        } else {
+            const auto reply = QMessageBox::question(
+                this, tr("Save markers before export?"),
+                tr("You have unsaved marker changes.\n\n"
+                   "Save them to the sidecar before queueing the export?"),
+                QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+            if (reply == QMessageBox::Cancel) return;
+            if (reply == QMessageBox::Save)   onSaveSidecar();
+        }
+        // Re-snapshot the (now-saved) markers into the project we're about
+        // to enqueue, so subsequent edits don't affect the queued job.
+        p.markers = m_markers->markers();
+    }
+
+    m_exportQueue->enqueue(p, dlg.outputPath(), dlg.quality());
 }
 
 void MainWindow::onMarkStart()
@@ -398,6 +468,21 @@ void MainWindow::onPositionChanged(qint64 ms)
     m_timeline->setPositionMs(ms);
     m_timeLabel->setText(QStringLiteral("%1 / %2")
                              .arg(formatTime(ms), formatTime(m_playback->duration())));
+
+    // Preview mode: if the playhead is inside a confirmed cut, jump to the
+    // far end of the merged cut block so the user hears/sees the result of
+    // the export without committing to it. Adjacent cuts get walked one at
+    // a time on subsequent positionChanged ticks — that's fine; the visual
+    // effect is the same as a single longer cut.
+    if (!m_previewMode) return;
+    qint64 jumpTo = -1;
+    for (const auto& m : m_markers->markers()) {
+        if (m.status != Status::Confirmed || !m.isValid()) continue;
+        if (ms >= m.startMs && ms < m.endMs) {
+            jumpTo = std::max(jumpTo, m.endMs);
+        }
+    }
+    if (jumpTo >= 0) m_playback->seek(jumpTo);
 }
 
 void MainWindow::onDurationKnown(qint64 ms)

@@ -102,7 +102,7 @@ void MainWindow::buildUi()
     tLayout->addStretch(1);
 
     auto* hint = new QLabel(
-        QStringLiteral("Space play · [ ] mark cut · Esc cancel · ←/→ 5s · Shift+←/→ 1s · Ctrl+←/→ frame · J/K/L shuttle"),
+        QStringLiteral("Space play · [ ] mark cut · Esc cancel · ←/→ 5s · Shift+←/→ 1s · Ctrl+←/→ frame · J/K/L shuttle (J reverse) · 1 reset rate"),
         transport);
     hint->setStyleSheet(QStringLiteral("color:#888;"));
     tLayout->addWidget(hint);
@@ -224,6 +224,31 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
     const bool shift = mods.testFlag(Qt::ShiftModifier);
     const bool ctrl  = mods.testFlag(Qt::ControlModifier);
 
+    // NLE-style shuttle ladder. J steps left (toward reverse), L steps
+    // right (toward fast-forward). Note: libVLC's reverse playback works
+    // on most h264/hevc/etc. but a few exotic codecs may silently no-op.
+    static constexpr double kRateLadder[] = {
+        -4.0, -2.0, -1.0, -0.5, 0.5, 1.0, 2.0, 4.0,
+    };
+    static constexpr int kLadderLen = sizeof(kRateLadder) / sizeof(kRateLadder[0]);
+    auto closestIndex = [](double r) {
+        int idx = 5;  // 1.0 by default
+        double best = 1e9;
+        for (int i = 0; i < kLadderLen; ++i) {
+            const double d = std::abs(kRateLadder[i] - r);
+            if (d < best) { best = d; idx = i; }
+        }
+        return idx;
+    };
+    auto stepRate = [&](int delta) {
+        const int idx = std::clamp(closestIndex(m_intendedRate) + delta, 0, kLadderLen - 1);
+        m_intendedRate = kRateLadder[idx];
+        m_playback->setRate(m_intendedRate);
+        if (!m_playback->isPlaying()) m_playback->play();
+        statusBar()->showMessage(
+            QStringLiteral("Rate %1×").arg(m_intendedRate, 0, 'g', 2), 1500);
+    };
+
     switch (event->key()) {
         case Qt::Key_Space:
             m_playback->togglePlayPause();
@@ -245,13 +270,19 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
             m_playback->stepFrame(+1);
             return;
         case Qt::Key_J:
-            m_playback->setRate(std::max(0.25, m_playback->rate() / 2.0));
+            stepRate(-1);
             return;
         case Qt::Key_K:
             m_playback->pause();
             return;
         case Qt::Key_L:
-            m_playback->setRate(std::min(4.0, m_playback->rate() * 2.0));
+            stepRate(+1);
+            return;
+        case Qt::Key_1:
+            m_intendedRate = 1.0;
+            m_playback->setRate(1.0);
+            if (!m_playback->isPlaying()) m_playback->play();
+            statusBar()->showMessage(QStringLiteral("Rate 1× (reset)"), 1500);
             return;
         case Qt::Key_Escape:
             if (m_pendingCutStartMs >= 0) {

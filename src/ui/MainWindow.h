@@ -75,6 +75,10 @@ private:
     qint64  m_pendingCutStartMs = -1;  // -1 = no pending start
     bool    m_dirty = false;
     bool    m_previewMode = false;
+    /// J/K/L tracks the user's *intended* rate independently of libVLC,
+    /// because libvlc_get_rate can return slightly different floats on
+    /// readback (and 0 when paused). Reset to 1.0 by the '1' key.
+    double  m_intendedRate = 1.0;
 };
 
 } // namespace censorcut

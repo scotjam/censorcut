@@ -17,14 +17,20 @@
 namespace censorcut {
 
 namespace {
-constexpr int kEdgeGrabPx = 5;        // pixels around a marker edge that count as a grab
-constexpr int kBandHalfHeight = 12;   // marker band extends ±this from the vertical centre
+constexpr int kEdgeGrabPx     = 5;   // pixels around a marker edge that count as a grab
+constexpr int kMiniMapTop     = 0;
+constexpr int kMiniMapH       = 3;
+constexpr int kMarkerBandTop  = 8;
+constexpr int kMarkerBandH    = 28;
+constexpr int kScrubberTop    = 42;
+constexpr int kScrubberH      = 16;
+constexpr int kMinHeight      = kScrubberTop + kScrubberH + 4;  // 62 px
 } // namespace
 
 TimelineWidget::TimelineWidget(QWidget* parent)
     : QWidget(parent)
 {
-    setMinimumHeight(48);
+    setMinimumHeight(kMinHeight);
     setMouseTracking(true);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setContextMenuPolicy(Qt::DefaultContextMenu);
@@ -130,13 +136,21 @@ void TimelineWidget::panBy(qint64 deltaMs)
     update();
 }
 
+QRect TimelineWidget::markerBandRect() const
+{
+    return QRect(0, kMarkerBandTop, width(), kMarkerBandH);
+}
+
+QRect TimelineWidget::scrubberRect() const
+{
+    return QRect(0, kScrubberTop, width(), kScrubberH);
+}
+
 TimelineWidget::Hit TimelineWidget::hitTest(const QPoint& pos) const
 {
     Hit hit;
     if (!m_model || m_durationMs <= 0) return hit;
-
-    const int yMid = height() / 2;
-    if (pos.y() < yMid - kBandHalfHeight || pos.y() > yMid + kBandHalfHeight) return hit;
+    if (!markerBandRect().contains(pos)) return hit;
 
     // Iterate in reverse so a marker drawn last (on top) wins ties.
     const auto& markers = m_model->markers();
@@ -155,10 +169,13 @@ void TimelineWidget::paintEvent(QPaintEvent*)
     QPainter p(this);
     p.fillRect(rect(), QColor(0x22, 0x24, 0x2A));
 
-    // Track baseline
+    const QRect band = markerBandRect();
+    const QRect scrub = scrubberRect();
+
+    // Marker band background
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0x2D, 0x30, 0x37));
-    p.drawRect(0, height() / 2 - 8, width(), 16);
+    p.drawRect(band);
 
     // Markers — skip ones that are entirely outside the visible view.
     if (m_model && m_durationMs > 0 && m_viewEndMs > m_viewStartMs) {
@@ -174,7 +191,7 @@ void TimelineWidget::paintEvent(QPaintEvent*)
                 case Status::Rejected:  c = QColor(0x66, 0x66, 0x66, 120); break;  // grey
             }
             p.setBrush(c);
-            p.drawRect(x1, height() / 2 - kBandHalfHeight, w, 2 * kBandHalfHeight);
+            p.drawRect(x1, band.top(), w, band.height());
         }
     }
 
@@ -182,35 +199,61 @@ void TimelineWidget::paintEvent(QPaintEvent*)
     if (m_pendingStartMs >= 0 && m_durationMs > 0) {
         const int x = msToX(m_pendingStartMs);
         p.setPen(QPen(QColor(0xFF, 0xC8, 0x4D), 2));
-        p.drawLine(x, 4, x, height() - 4);
+        p.drawLine(x, band.top() - 2, x, scrub.bottom() + 2);
         p.setBrush(QColor(0xFF, 0xC8, 0x4D, 60));
         p.setPen(Qt::NoPen);
-        p.drawRect(x, height() / 2 - kBandHalfHeight, msToX(m_positionMs) - x, 2 * kBandHalfHeight);
+        p.drawRect(x, band.top(), msToX(m_positionMs) - x, band.height());
     }
 
-    // Playhead (only if it's within the current view)
+    // Scrubber strip — the fat horizontal bar at the bottom dedicated to
+    // seeking. Distinct from the marker band so dragging here can never
+    // accidentally edit a marker's edge.
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0x18, 0x1A, 0x20));
+    p.drawRoundedRect(scrub.adjusted(2, 0, -2, 0), 4, 4);
+
+    if (m_durationMs > 0) {
+        const int playX = std::clamp(msToX(m_positionMs), scrub.left() + 2, scrub.right() - 2);
+        // Filled portion left of the playhead.
+        const QRect fill(scrub.left() + 2, scrub.top() + 2,
+                         std::max(0, playX - scrub.left() - 2), scrub.height() - 4);
+        p.setBrush(QColor(0x4A, 0x90, 0xE2));
+        p.drawRoundedRect(fill, 3, 3);
+
+        // White circular handle so the user can see the grab point.
+        const int handleR = 7;
+        p.setPen(QPen(QColor(0x2A, 0x60, 0xA0), 1));
+        p.setBrush(Qt::white);
+        p.drawEllipse(QPoint(std::clamp(playX, scrub.left() + handleR, scrub.right() - handleR),
+                             scrub.center().y() + 1),
+                      handleR, handleR);
+    }
+
+    // Playhead vertical line through the marker band (helps line up cuts
+    // visually). Skip if outside the current view.
     if (m_durationMs > 0 && m_positionMs >= m_viewStartMs && m_positionMs <= m_viewEndMs) {
         const int x = msToX(m_positionMs);
         p.setPen(QPen(QColor(0xF0, 0xF0, 0xF0), 2));
-        p.drawLine(x, 0, x, height());
+        p.drawLine(x, band.top() - 2, x, band.bottom() + 2);
     }
 
-    // Mini-map / zoom indicator across the very top (3 px high). Shows the
-    // visible window as a bright bar against the full-duration track.
+    // Mini-map / zoom indicator across the very top (3 px high).
     if (m_durationMs > 0 && (m_viewStartMs > 0 || m_viewEndMs < m_durationMs)) {
         p.setPen(Qt::NoPen);
         p.setBrush(QColor(0x40, 0x44, 0x4C));
-        p.drawRect(0, 0, width(), 3);
+        p.drawRect(0, kMiniMapTop, width(), kMiniMapH);
         const double s = double(m_viewStartMs) / double(m_durationMs);
         const double e = double(m_viewEndMs)   / double(m_durationMs);
         const int xs = int(s * width());
         const int xe = int(e * width());
         p.setBrush(QColor(0xFF, 0xC8, 0x4D));
-        p.drawRect(xs, 0, std::max(2, xe - xs), 3);
+        p.drawRect(xs, kMiniMapTop, std::max(2, xe - xs), kMiniMapH);
 
-        const double zoomLevel = double(m_durationMs) / std::max<qint64>(1, m_viewEndMs - m_viewStartMs);
+        const double zoomLevel = double(m_durationMs)
+                                 / std::max<qint64>(1, m_viewEndMs - m_viewStartMs);
         p.setPen(QColor(0xFF, 0xC8, 0x4D));
-        p.drawText(width() - 60, 18, QStringLiteral("%1× zoom").arg(zoomLevel, 0, 'f', 1));
+        p.drawText(width() - 64, kMarkerBandTop + 2,
+                   QStringLiteral("%1× zoom").arg(zoomLevel, 0, 'f', 1));
     }
 }
 

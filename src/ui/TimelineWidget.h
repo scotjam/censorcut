@@ -47,6 +47,8 @@ private:
 
     qint64 xToMs(int x) const;
     int    msToX(qint64 ms) const;
+    QRect  markerBandRect() const;
+    QRect  scrubberRect() const;
     Hit    hitTest(const QPoint& pos) const;
     void   showMarkerMenu(const QUuid& id, const QPoint& globalPos);
     void   zoomBy(double factor, int anchorX);

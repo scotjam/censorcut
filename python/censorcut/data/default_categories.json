@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "comment": "Built-in audio-viable categories. AudioSet display names are used for the 'labels' lists; the YAMNet detector resolves them to class indices via the official class map. A category with only yamnet detectors silently produces no suggestions if YAMNet isn't installed.",
+  "categories": [
+    {
+      "name": "Jump scare",
+      "enabled": true,
+      "threshold": 0.5,
+      "padBeforeMs": 1000,
+      "padAfterMs": 1500,
+      "detectors": [
+        { "id": "audio.lufs.jump", "weight": 0.7 },
+        { "id": "audio.yamnet", "weight": 0.5,
+          "params": { "labels": ["Screaming", "Whimper", "Gasp",
+                                  "Crash", "Smash, crash", "Bang",
+                                  "Boom"] } }
+      ]
+    },
+    {
+      "name": "Screaming",
+      "enabled": true,
+      "threshold": 0.5,
+      "padBeforeMs": 500,
+      "padAfterMs": 800,
+      "detectors": [
+        { "id": "audio.yamnet", "weight": 1.0,
+          "params": { "labels": ["Screaming", "Whimper",
+                                  "Children shouting"] } }
+      ]
+    },
+    {
+      "name": "Crying / sad",
+      "enabled": true,
+      "threshold": 0.5,
+      "padBeforeMs": 500,
+      "padAfterMs": 800,
+      "detectors": [
+        { "id": "audio.yamnet", "weight": 1.0,
+          "params": { "labels": ["Crying, sobbing", "Baby cry, infant cry",
+                                  "Whimper", "Wail, moan"] } }
+      ]
+    },
+    {
+      "name": "Yelling",
+      "enabled": true,
+      "threshold": 0.55,
+      "padBeforeMs": 400,
+      "padAfterMs": 600,
+      "detectors": [
+        { "id": "audio.yamnet", "weight": 1.0,
+          "params": { "labels": ["Yell", "Shout", "Battle cry",
+                                  "Children shouting"] } }
+      ]
+    },
+    {
+      "name": "Gunfire",
+      "enabled": true,
+      "threshold": 0.45,
+      "padBeforeMs": 600,
+      "padAfterMs": 800,
+      "detectors": [
+        { "id": "audio.yamnet", "weight": 1.0,
+          "params": { "labels": ["Gunshot, gunfire", "Machine gun",
+                                  "Cap gun", "Artillery fire", "Fusillade",
+                                  "Cannon"] } }
+      ]
+    },
+    {
+      "name": "Hitting / impacts",
+      "enabled": true,
+      "threshold": 0.5,
+      "padBeforeMs": 400,
+      "padAfterMs": 600,
+      "detectors": [
+        { "id": "audio.yamnet", "weight": 1.0,
+          "params": { "labels": ["Slap, smack", "Thump, thud",
+                                  "Smash, crash", "Crack",
+                                  "Glass", "Breaking"] } }
+      ]
+    }
+  ]
+}

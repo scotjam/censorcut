@@ -3,8 +3,10 @@
 #include "core/AnalysisController.h"
 #include "core/Marker.h"
 #include "core/MarkerModel.h"
+#include "core/PlaybackController.h"
 
 #include <QFormLayout>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QProgressBar>
@@ -12,10 +14,31 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace censorcut {
 
-AnalyzerPanel::AnalyzerPanel(MarkerModel* markers, QWidget* parent)
-    : QWidget(parent), m_markers(markers)
+namespace {
+
+QString formatTimeShort(qint64 ms)
+{
+    if (ms < 0) ms = 0;
+    const qint64 sec = ms / 1000;
+    const int h = int(sec / 3600);
+    const int m = int((sec % 3600) / 60);
+    const int s = int(sec % 60);
+    if (h > 0) return QStringLiteral("%1:%2:%3")
+                   .arg(h).arg(m, 2, 10, QLatin1Char('0'))
+                   .arg(s, 2, 10, QLatin1Char('0'));
+    return QStringLiteral("%1:%2").arg(m).arg(s, 2, 10, QLatin1Char('0'));
+}
+
+} // namespace
+
+AnalyzerPanel::AnalyzerPanel(MarkerModel* markers,
+                             PlaybackController* playback,
+                             QWidget* parent)
+    : QWidget(parent), m_markers(markers), m_playback(playback)
 {
     auto* main = new QVBoxLayout(this);
     main->setContentsMargins(12, 12, 12, 12);
@@ -62,9 +85,40 @@ AnalyzerPanel::AnalyzerPanel(MarkerModel* markers, QWidget* parent)
     m_summaryLabel->setWordWrap(true);
     main->addWidget(m_summaryLabel);
 
+    // ---- Review pending suggestions section -----------------------------
+    m_reviewFrame = new QFrame(this);
+    m_reviewFrame->setFrameShape(QFrame::StyledPanel);
+    auto* reviewLayout = new QVBoxLayout(m_reviewFrame);
+    reviewLayout->setContentsMargins(8, 8, 8, 8);
+    auto* reviewHeader = new QLabel(tr("Review pending suggestions"), m_reviewFrame);
+    reviewHeader->setStyleSheet(QStringLiteral("font-weight:bold;"));
+    reviewLayout->addWidget(reviewHeader);
+
+    m_reviewCount = new QLabel(m_reviewFrame);
+    m_reviewCount->setStyleSheet(QStringLiteral("color:#888;"));
+    reviewLayout->addWidget(m_reviewCount);
+
+    m_reviewCurrent = new QLabel(m_reviewFrame);
+    m_reviewCurrent->setWordWrap(true);
+    reviewLayout->addWidget(m_reviewCurrent);
+
+    auto* reviewBtns = new QHBoxLayout;
+    m_reviewPrev    = new QPushButton(tr("◀ Prev"),     m_reviewFrame);
+    m_reviewReject  = new QPushButton(tr("✗ Reject"),   m_reviewFrame);
+    m_reviewConfirm = new QPushButton(tr("✓ Confirm"),  m_reviewFrame);
+    m_reviewSkip    = new QPushButton(tr("Skip"),       m_reviewFrame);
+    m_reviewNext    = new QPushButton(tr("Next ▶"),     m_reviewFrame);
+    for (QPushButton* b : {m_reviewPrev, m_reviewReject, m_reviewConfirm,
+                            m_reviewSkip, m_reviewNext}) {
+        b->setFocusPolicy(Qt::NoFocus);
+        reviewBtns->addWidget(b);
+    }
+    reviewLayout->addLayout(reviewBtns);
+    main->addWidget(m_reviewFrame);
+
     auto* note = new QLabel(
-        tr("M3 detects loud spikes after quiet stretches (jump-scare-like). "
-           "More categories land in M4 (YAMNet) and beyond."), this);
+        tr("Heuristics may miss things, hallucinate, or over-cut — review "
+           "every suggestion above before exporting."), this);
     note->setWordWrap(true);
     note->setStyleSheet(QStringLiteral("color:#777; font-size: 10pt;"));
     main->addWidget(note);
@@ -84,14 +138,34 @@ AnalyzerPanel::AnalyzerPanel(MarkerModel* markers, QWidget* parent)
         describeProfile();
         emit ageChanged(age);
     });
-    // After the user presses Enter or tabs out, give focus back to the top
-    // level so transport keys (Space, ←/→, J/K/L) work again.
     connect(m_ageSpin, &QSpinBox::editingFinished, this, [this]{
         if (auto* w = window()) w->setFocus(Qt::OtherFocusReason);
     });
 
+    connect(m_reviewPrev,    &QPushButton::clicked, this, &AnalyzerPanel::onReviewPrev);
+    connect(m_reviewReject,  &QPushButton::clicked, this, &AnalyzerPanel::onReviewReject);
+    connect(m_reviewConfirm, &QPushButton::clicked, this, &AnalyzerPanel::onReviewConfirm);
+    connect(m_reviewSkip,    &QPushButton::clicked, this, &AnalyzerPanel::onReviewNext);
+    connect(m_reviewNext,    &QPushButton::clicked, this, &AnalyzerPanel::onReviewNext);
+
+    if (m_playback) {
+        connect(m_playback, &PlaybackController::positionChanged,
+                this, &AnalyzerPanel::onPositionChanged);
+    }
+    if (m_markers) {
+        connect(m_markers, &MarkerModel::rowsInserted,
+                this, &AnalyzerPanel::onMarkersChanged);
+        connect(m_markers, &MarkerModel::rowsRemoved,
+                this, &AnalyzerPanel::onMarkersChanged);
+        connect(m_markers, &MarkerModel::dataChanged,
+                this, &AnalyzerPanel::onMarkersChanged);
+        connect(m_markers, &MarkerModel::modelReset,
+                this, &AnalyzerPanel::onMarkersChanged);
+    }
+
     describeProfile();
     setMovie(QString(), 0);
+    refreshReviewUi();
 }
 
 void AnalyzerPanel::setMovie(const QString& sourcePath, qint64 durationMs)
@@ -203,6 +277,177 @@ void AnalyzerPanel::setRunning(bool running)
     m_cancelBtn->setVisible(running);
     m_progress->setVisible(running);
     m_phaseLabel->setVisible(running);
+}
+
+// --------------------------------------------------------------------------
+// Review-pending workflow
+// --------------------------------------------------------------------------
+
+void AnalyzerPanel::onPositionChanged(qint64 ms)
+{
+    // While reviewing one marker, auto-pause when the playhead reaches the
+    // post-roll boundary so the user can decide without scrambling for the
+    // pause key.
+    if (m_reviewId.isNull() || m_reviewPauseAtMs < 0 || !m_playback) return;
+    if (ms < m_reviewPauseAtMs) return;
+    m_playback->pause();
+    m_reviewPauseAtMs = -1;  // arm-once
+}
+
+void AnalyzerPanel::onMarkersChanged()
+{
+    refreshReviewUi();
+}
+
+QUuid AnalyzerPanel::pendingAfter(qint64 referenceMs) const
+{
+    if (!m_markers) return {};
+    QUuid bestId;
+    qint64 bestStart = std::numeric_limits<qint64>::max();
+    for (const auto& m : m_markers->markers()) {
+        if (m.status != Status::Pending) continue;
+        if (m.startMs <= referenceMs) continue;
+        if (m.startMs < bestStart) { bestStart = m.startMs; bestId = m.id; }
+    }
+    return bestId;
+}
+
+QUuid AnalyzerPanel::pendingBefore(qint64 referenceMs) const
+{
+    if (!m_markers) return {};
+    QUuid bestId;
+    qint64 bestStart = std::numeric_limits<qint64>::min();
+    for (const auto& m : m_markers->markers()) {
+        if (m.status != Status::Pending) continue;
+        if (m.startMs >= referenceMs) continue;
+        if (m.startMs > bestStart) { bestStart = m.startMs; bestId = m.id; }
+    }
+    return bestId;
+}
+
+void AnalyzerPanel::startReviewFor(const QUuid& id, qint64 newPositionMs)
+{
+    if (id.isNull() || !m_markers || !m_playback) return;
+    auto m = m_markers->findById(id);
+    if (!m) return;
+
+    m_reviewId = id;
+    const qint64 startWith = std::max<qint64>(0, m->startMs - m_reviewPreRollMs);
+    m_reviewPauseAtMs = (m->endMs >= 0)
+        ? std::min(m->endMs + m_reviewPostRollMs,
+                   m_durationMs > 0 ? m_durationMs : (m->endMs + m_reviewPostRollMs))
+        : -1;
+    Q_UNUSED(newPositionMs);
+    m_playback->seek(startWith);
+    m_playback->play();
+    refreshReviewUi();
+}
+
+void AnalyzerPanel::onReviewNext()
+{
+    if (!m_markers || !m_playback) return;
+    const qint64 ref = m_reviewId.isNull()
+        ? m_playback->position()
+        : [&]() -> qint64 {
+              auto m = m_markers->findById(m_reviewId);
+              return m ? m->startMs : m_playback->position();
+          }();
+    const QUuid next = pendingAfter(ref);
+    if (next.isNull()) {
+        m_reviewId = QUuid();
+        m_reviewPauseAtMs = -1;
+        refreshReviewUi();
+        return;
+    }
+    startReviewFor(next);
+}
+
+void AnalyzerPanel::onReviewPrev()
+{
+    if (!m_markers || !m_playback) return;
+    const qint64 ref = m_reviewId.isNull()
+        ? m_playback->position()
+        : [&]() -> qint64 {
+              auto m = m_markers->findById(m_reviewId);
+              return m ? m->startMs : m_playback->position();
+          }();
+    const QUuid prev = pendingBefore(ref);
+    if (prev.isNull()) return;
+    startReviewFor(prev);
+}
+
+void AnalyzerPanel::setStatusAndAdvance(int newStatus)
+{
+    if (m_reviewId.isNull() || !m_markers) {
+        // No active review marker — start one, then the caller can decide.
+        onReviewNext();
+        return;
+    }
+    auto m = m_markers->findById(m_reviewId);
+    if (m) {
+        Marker copy = *m;
+        copy.status = static_cast<Status>(newStatus);
+        m_markers->updateMarkerById(m_reviewId, copy);
+    }
+    // Use the marker's startMs as the reference for "next" so we don't
+    // re-pick the one we just acted on.
+    qint64 ref = m ? m->startMs : 0;
+    m_reviewId = QUuid();
+    m_reviewPauseAtMs = -1;
+    const QUuid next = pendingAfter(ref);
+    if (!next.isNull()) startReviewFor(next);
+    else                refreshReviewUi();
+}
+
+void AnalyzerPanel::onReviewConfirm()
+{
+    setStatusAndAdvance(static_cast<int>(Status::Confirmed));
+}
+
+void AnalyzerPanel::onReviewReject()
+{
+    setStatusAndAdvance(static_cast<int>(Status::Rejected));
+}
+
+void AnalyzerPanel::refreshReviewUi()
+{
+    if (!m_markers) return;
+    int pending = 0, total = 0;
+    for (const auto& m : m_markers->markers()) {
+        if (m.source != Source::Suggested) continue;
+        ++total;
+        if (m.status == Status::Pending) ++pending;
+    }
+
+    const bool show = total > 0;
+    m_reviewFrame->setVisible(show);
+    if (!show) return;
+
+    m_reviewCount->setText(tr("%1 pending of %2 total suggestion(s)").arg(pending).arg(total));
+
+    QString currentText;
+    if (!m_reviewId.isNull()) {
+        auto m = m_markers->findById(m_reviewId);
+        if (m) {
+            currentText = tr("Reviewing: %1   %2 → %3   (score %4)")
+                              .arg(m->category)
+                              .arg(formatTimeShort(m->startMs))
+                              .arg(formatTimeShort(m->endMs))
+                              .arg(QString::number(m->confidence, 'f', 2));
+        }
+    } else if (pending > 0) {
+        currentText = tr("Click Next to start reviewing.");
+    } else {
+        currentText = tr("All suggestions reviewed.");
+    }
+    m_reviewCurrent->setText(currentText);
+
+    const bool havePending = pending > 0;
+    m_reviewConfirm->setEnabled(!m_reviewId.isNull());
+    m_reviewReject->setEnabled(!m_reviewId.isNull());
+    m_reviewSkip->setEnabled(havePending);
+    m_reviewNext->setEnabled(havePending);
+    m_reviewPrev->setEnabled(true);  // can always step back
 }
 
 } // namespace censorcut

@@ -47,6 +47,10 @@ private:
     void buildMenus();
     void connectSignals();
     void loadProjectFor(const QString& moviePath);
+    /// On first launch (or whenever the disclaimer text version is bumped),
+    /// show the disclaimer modally. Acceptance is saved in QSettings;
+    /// "Quit" exits the application before the user can do anything.
+    void maybeShowDisclaimer();
     QString currentMoviePath() const { return m_currentMoviePath; }
     void    updateStatusBar();
 

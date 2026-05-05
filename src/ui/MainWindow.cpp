@@ -13,6 +13,7 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QDockWidget>
+#include <QPushButton>
 #include <QSettings>
 #include <QCloseEvent>
 #include <QFileDialog>
@@ -68,6 +69,12 @@ MainWindow::MainWindow(QWidget* parent)
     buildMenus();
     connectSignals();
     updateStatusBar();
+
+    // Show the disclaimer once on first launch (or when its text version is
+    // bumped). Deferred to a single-shot so the main window has actually
+    // started its event loop — modal dialogs need that to behave correctly.
+    QMetaObject::invokeMethod(this, &MainWindow::maybeShowDisclaimer,
+                              Qt::QueuedConnection);
 }
 
 MainWindow::~MainWindow() = default;
@@ -123,7 +130,7 @@ void MainWindow::buildUi()
     m_markerList->setContextMenuPolicy(Qt::CustomContextMenu);
     m_markerList->setSelectionMode(QAbstractItemView::ExtendedSelection);
 
-    m_analyzer = new AnalyzerPanel(m_markers, splitter);
+    m_analyzer = new AnalyzerPanel(m_markers, m_playback.get(), splitter);
 
     splitter->addWidget(m_markerList);
     splitter->addWidget(m_analyzer);
@@ -535,6 +542,46 @@ void MainWindow::onPlayingStateChanged(bool playing)
 void MainWindow::onTimelineScrubbed(qint64 ms)
 {
     m_playback->seek(ms);
+}
+
+void MainWindow::maybeShowDisclaimer()
+{
+    static const QString kCurrentVersion = QStringLiteral("1");
+    QSettings settings;
+    if (settings.value(QStringLiteral("disclaimer/acceptedVersion")).toString()
+        == kCurrentVersion) {
+        return;
+    }
+
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Disclaimer — please read"));
+    box.setIcon(QMessageBox::Information);
+    box.setTextFormat(Qt::RichText);
+    box.setText(tr(
+        "<b>CensorCut is not a substitute for parental review.</b><br><br>"
+        "It is not designed to take care of legal requirements as to what "
+        "children can be shown. It should only be used to <i>further</i> "
+        "censor videos that are already legally able to be shown to "
+        "children at the appropriate age.<br><br>"
+        "Automated detection (M3 onwards) may miss things, make mistakes, "
+        "or hallucinate content that isn't there. It may also cut more "
+        "than is necessary. <b>Review every suggestion before exporting.</b>"
+        "<br><br>"
+        "The software is provided <b>as is</b>, with no warranty. "
+        "No responsibility can be taken for any data loss."));
+    box.setStandardButtons(QMessageBox::Ok | QMessageBox::Close);
+    box.button(QMessageBox::Ok)->setText(tr("I understand"));
+    box.button(QMessageBox::Close)->setText(tr("Quit"));
+    box.setDefaultButton(QMessageBox::Ok);
+
+    if (box.exec() == QMessageBox::Ok) {
+        settings.setValue(QStringLiteral("disclaimer/acceptedVersion"),
+                          kCurrentVersion);
+    } else {
+        // User declined — close the window. Closing the only window quits
+        // the app once the event loop returns to its natural exit.
+        close();
+    }
 }
 
 void MainWindow::onMarkerListContextMenu(const QPoint& pos)

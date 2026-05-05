@@ -48,7 +48,7 @@ def _download(urls: Iterable[str], dst: Path, label: str) -> None:
             tmp.write_bytes(data)
             tmp.replace(dst)
             digest = hashlib.sha256(data).hexdigest()[:12]
-            print(f"  → wrote {dst}  ({len(data):,} bytes, sha256={digest})")
+            print(f"  -> wrote {dst}  ({len(data):,} bytes, sha256={digest})")
             return
         except Exception as e:  # network, HTTP, IO
             print(f"  ! {e}", file=sys.stderr)

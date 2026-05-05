@@ -53,22 +53,31 @@ class YamnetUnavailable(RuntimeError):
 # --------------------------------------------------------------------------
 
 def _import_tflite():
-    """Return (Interpreter, source_label) or raise YamnetUnavailable."""
-    # Preferred: lightweight runtime (~10 MB).
+    """Return (Interpreter, source_label) or raise YamnetUnavailable.
+
+    On Windows, the canonical 'tflite-runtime' wheel isn't published, so we
+    also try Google's 'ai-edge-litert' (the new name for the same runtime),
+    plus full TensorFlow as a heavy fallback."""
+    try:
+        from ai_edge_litert.interpreter import Interpreter  # type: ignore
+        return Interpreter, "ai_edge_litert"
+    except ImportError:
+        pass
     try:
         from tflite_runtime.interpreter import Interpreter  # type: ignore
         return Interpreter, "tflite_runtime"
     except ImportError:
         pass
-    # Fallback: full TensorFlow's bundled lite interpreter (~600 MB install).
     try:
         import tensorflow as tf  # type: ignore
         return tf.lite.Interpreter, "tensorflow"
     except ImportError:
         pass
     raise YamnetUnavailable(
-        "neither tflite-runtime nor tensorflow is installed. "
-        "Try: pip install tflite-runtime numpy")
+        "no TFLite runtime installed. Try one of:\n"
+        "  pip install ai-edge-litert       (Windows / Linux / macOS)\n"
+        "  pip install tflite-runtime       (Linux / macOS)\n"
+        "  pip install tensorflow            (heavyweight fallback)")
 
 
 def _import_numpy():

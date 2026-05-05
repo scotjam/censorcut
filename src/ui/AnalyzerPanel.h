@@ -4,8 +4,10 @@
 #include "core/AnalysisResult.h"
 
 #include <QString>
+#include <QUuid>
 #include <QWidget>
 
+class QFrame;
 class QLabel;
 class QProgressBar;
 class QPushButton;
@@ -15,15 +17,19 @@ namespace censorcut {
 
 class AnalysisController;
 class MarkerModel;
+class PlaybackController;
 
 /// The right-pane analyzer UI: age selector, profile label, Run button,
-/// progress, and a result summary. Owns an AnalysisController, runs it
-/// against the current movie, and pushes Source::Suggested markers into
-/// the supplied MarkerModel.
+/// progress, a result summary, and a "review pending suggestions" walker
+/// that lets the user step through Suggested markers, play each one, and
+/// click Confirm/Reject. Owns an AnalysisController; pushes
+/// Source::Suggested markers into the supplied MarkerModel.
 class AnalyzerPanel : public QWidget {
     Q_OBJECT
 public:
-    explicit AnalyzerPanel(MarkerModel* markers, QWidget* parent = nullptr);
+    AnalyzerPanel(MarkerModel* markers,
+                  PlaybackController* playback,
+                  QWidget* parent = nullptr);
 
     /// Set the current source video and its known duration. Pass an empty
     /// path to disable Run.
@@ -35,8 +41,6 @@ public:
     void setSelectedAge(int age);
 
 signals:
-    /// Emitted when the user changes the age. Carries the chosen age (the
-    /// caller can re-derive the AgeProfile if needed).
     void ageChanged(int age);
 
 private slots:
@@ -47,24 +51,55 @@ private slots:
     void onCompleted(const AnalysisResult& result);
     void onFailed(const QString& reason);
 
+    void onPositionChanged(qint64 ms);
+    void onMarkersChanged();
+
+    void onReviewPrev();
+    void onReviewNext();
+    void onReviewConfirm();
+    void onReviewReject();
+
 private:
     void setRunning(bool running);
     void describeProfile();
+    void refreshReviewUi();
+    void startReviewFor(const QUuid& id, qint64 newPositionMs = -1);
+    /// Find the next/previous Pending marker relative to a reference time.
+    QUuid pendingAfter(qint64 referenceMs)  const;
+    QUuid pendingBefore(qint64 referenceMs) const;
+    void  setStatusAndAdvance(int newStatus);
 
-    MarkerModel*       m_markers    = nullptr;
+    MarkerModel*        m_markers    = nullptr;
+    PlaybackController* m_playback   = nullptr;
     AnalysisController* m_controller = nullptr;
 
     QString m_sourcePath;
     qint64  m_durationMs = 0;
     int     m_age = 8;
 
-    QSpinBox*    m_ageSpin   = nullptr;
-    QLabel*      m_profileLabel = nullptr;
-    QPushButton* m_runBtn    = nullptr;
-    QPushButton* m_cancelBtn = nullptr;
-    QProgressBar* m_progress = nullptr;
-    QLabel*      m_phaseLabel = nullptr;
-    QLabel*      m_summaryLabel = nullptr;
+    // Review state
+    QUuid  m_reviewId;          // marker currently being auditioned, null if none
+    qint64 m_reviewPauseAtMs = -1;  // playhead position at which to auto-pause
+    qint64 m_reviewPreRollMs  = 800;
+    qint64 m_reviewPostRollMs = 600;
+
+    QSpinBox*    m_ageSpin       = nullptr;
+    QLabel*      m_profileLabel  = nullptr;
+    QPushButton* m_runBtn        = nullptr;
+    QPushButton* m_cancelBtn     = nullptr;
+    QProgressBar* m_progress     = nullptr;
+    QLabel*      m_phaseLabel    = nullptr;
+    QLabel*      m_summaryLabel  = nullptr;
+
+    // Review section
+    QFrame*      m_reviewFrame   = nullptr;
+    QLabel*      m_reviewCount   = nullptr;
+    QLabel*      m_reviewCurrent = nullptr;
+    QPushButton* m_reviewPrev    = nullptr;
+    QPushButton* m_reviewReject  = nullptr;
+    QPushButton* m_reviewConfirm = nullptr;
+    QPushButton* m_reviewSkip    = nullptr;
+    QPushButton* m_reviewNext    = nullptr;
 };
 
 } // namespace censorcut

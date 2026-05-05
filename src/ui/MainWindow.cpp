@@ -119,6 +119,7 @@ void MainWindow::buildUi()
     m_markerList->setModel(m_markers);
     m_markerList->setMinimumWidth(280);
     m_markerList->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_markerList->setSelectionMode(QAbstractItemView::ExtendedSelection);
 
     m_analyzer = new AnalyzerPanel(m_markers, splitter);
 
@@ -536,32 +537,79 @@ void MainWindow::onTimelineScrubbed(qint64 ms)
 
 void MainWindow::onMarkerListContextMenu(const QPoint& pos)
 {
-    const QModelIndex ix = m_markerList->indexAt(pos);
-    if (!ix.isValid()) return;
-    auto m = m_markers->markerAt(ix.row());
-    if (!m) return;
+    QModelIndexList selected = m_markerList->selectionModel()->selectedRows();
+    // If the user right-clicked a row that wasn't part of the selection,
+    // treat that single row as the operation target — matches what most
+    // users expect from list-view context menus.
+    const QModelIndex underCursor = m_markerList->indexAt(pos);
+    if (underCursor.isValid()
+        && std::none_of(selected.cbegin(), selected.cend(),
+                        [&](const QModelIndex& ix){ return ix.row() == underCursor.row(); })) {
+        selected = {underCursor};
+        m_markerList->setCurrentIndex(underCursor);
+    }
+    if (selected.isEmpty()) return;
+
+    // Snapshot ids up-front so deletions don't invalidate the work list.
+    QList<QUuid> ids;
+    ids.reserve(selected.size());
+    for (const QModelIndex& ix : selected) {
+        if (auto m = m_markers->markerAt(ix.row())) ids.append(m->id);
+    }
+    if (ids.isEmpty()) return;
 
     QMenu menu(this);
-    auto* play = menu.addAction(QStringLiteral("Play this marker"));
-    auto* confirm = menu.addAction(QStringLiteral("Confirm"));
-    auto* reject  = menu.addAction(QStringLiteral("Reject"));
-    menu.addSeparator();
-    auto* del = menu.addAction(QStringLiteral("Delete"));
+    if (ids.size() == 1) {
+        auto m = m_markers->findById(ids.first());
+        if (!m) return;
 
-    confirm->setEnabled(m->status != Status::Confirmed);
-    reject->setEnabled(m->status != Status::Rejected);
+        auto* play    = menu.addAction(tr("Play this marker"));
+        auto* confirm = menu.addAction(tr("Confirm"));
+        auto* reject  = menu.addAction(tr("Reject"));
+        menu.addSeparator();
+        auto* del     = menu.addAction(tr("Delete"));
+
+        confirm->setEnabled(m->status != Status::Confirmed);
+        reject->setEnabled(m->status != Status::Rejected);
+
+        QAction* chosen = menu.exec(m_markerList->viewport()->mapToGlobal(pos));
+        if (!chosen) return;
+        if (chosen == play) {
+            m_playback->seek(m->startMs);
+            m_playback->play();
+        } else if (chosen == confirm) {
+            Marker copy = *m; copy.status = Status::Confirmed;
+            m_markers->updateMarkerById(ids.first(), copy);
+        } else if (chosen == reject) {
+            Marker copy = *m; copy.status = Status::Rejected;
+            m_markers->updateMarkerById(ids.first(), copy);
+        } else if (chosen == del) {
+            m_markers->removeMarkerById(ids.first());
+        }
+        return;
+    }
+
+    // Multi-selection: bulk operations.
+    auto* confirmAll = menu.addAction(tr("Confirm %n marker(s)", nullptr, ids.size()));
+    auto* rejectAll  = menu.addAction(tr("Reject %n marker(s)",  nullptr, ids.size()));
+    menu.addSeparator();
+    auto* deleteAll  = menu.addAction(tr("Delete %n marker(s)",  nullptr, ids.size()));
 
     QAction* chosen = menu.exec(m_markerList->viewport()->mapToGlobal(pos));
     if (!chosen) return;
-    if (chosen == play) {
-        m_playback->seek(m->startMs);
-        m_playback->play();
-    } else if (chosen == confirm) {
-        m_markers->setData(ix, static_cast<int>(Status::Confirmed), MarkerModel::StatusRole);
-    } else if (chosen == reject) {
-        m_markers->setData(ix, static_cast<int>(Status::Rejected), MarkerModel::StatusRole);
-    } else if (chosen == del) {
-        m_markers->removeMarkerAt(ix.row());
+
+    if (chosen == confirmAll || chosen == rejectAll) {
+        const Status target = (chosen == confirmAll) ? Status::Confirmed : Status::Rejected;
+        for (const QUuid& id : ids) {
+            auto m = m_markers->findById(id);
+            if (!m) continue;
+            if (m->status == target) continue;
+            Marker copy = *m;
+            copy.status = target;
+            m_markers->updateMarkerById(id, copy);
+        }
+    } else if (chosen == deleteAll) {
+        for (const QUuid& id : ids) m_markers->removeMarkerById(id);
     }
 }
 

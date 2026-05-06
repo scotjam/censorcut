@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "comment": "Built-in categories. Tuning notes: YAMNet scores aren't well-calibrated, so audio.yamnet weights are capped at 0.5 — they confirm a category rather than triggering it on their own. Vision.clip is better calibrated for content semantics and carries the higher weight where applicable. Thresholds are deliberately conservative; the analyzer should err on missing some scenes rather than flagging the entire movie. Tighten further by raising thresholds; loosen by lowering them or bumping audio weights.",
+  "comment": "Built-in categories. Tuning notes: YAMNet scores aren't well-calibrated, so audio.yamnet weights stay <= 0.5 — they corroborate a category rather than triggering it on their own. Vision.clip scores are now linearly remapped from raw cosine [0.15..0.35] to [0..1], so a strong visual match comfortably reaches 0.7+ and a non-match sits near 0. Thresholds in this file assume that calibration. The maxDurationMs field on each category drops suspiciously long runs (any single suggestion >maxDurationMs) since those are almost always calibration false-positives, not 90-minute scenes.",
   "categories": [
     {
       "name": "Jump scare",
       "enabled": true,
-      "threshold": 0.75,
+      "threshold": 0.6,
       "padBeforeMs": 1000,
       "padAfterMs": 1500,
       "maxDurationMs": 6000,
@@ -23,9 +23,10 @@
     {
       "name": "Screaming",
       "enabled": true,
-      "threshold": 0.7,
+      "threshold": 0.55,
       "padBeforeMs": 500,
       "padAfterMs": 800,
+      "maxDurationMs": 12000,
       "detectors": [
         { "id": "audio.yamnet", "weight": 0.5,
           "params": { "labels": ["Screaming"] } },
@@ -37,9 +38,10 @@
     {
       "name": "Crying / sad",
       "enabled": true,
-      "threshold": 0.75,
+      "threshold": 0.6,
       "padBeforeMs": 500,
       "padAfterMs": 800,
+      "maxDurationMs": 15000,
       "detectors": [
         { "id": "audio.yamnet", "weight": 0.5,
           "params": { "labels": ["Crying, sobbing", "Baby cry, infant cry",
@@ -52,9 +54,10 @@
     {
       "name": "Yelling",
       "enabled": true,
-      "threshold": 0.7,
+      "threshold": 0.6,
       "padBeforeMs": 400,
       "padAfterMs": 600,
+      "maxDurationMs": 10000,
       "detectors": [
         { "id": "audio.yamnet", "weight": 0.4,
           "params": { "labels": ["Yell", "Shout", "Battle cry"] } },
@@ -66,9 +69,10 @@
     {
       "name": "Gunfire",
       "enabled": true,
-      "threshold": 0.6,
+      "threshold": 0.55,
       "padBeforeMs": 600,
       "padAfterMs": 800,
+      "maxDurationMs": 10000,
       "detectors": [
         { "id": "audio.yamnet", "weight": 0.5,
           "params": { "labels": ["Gunshot, gunfire", "Machine gun",
@@ -82,9 +86,10 @@
     {
       "name": "Hitting / impacts",
       "enabled": true,
-      "threshold": 0.7,
+      "threshold": 0.6,
       "padBeforeMs": 400,
       "padAfterMs": 600,
+      "maxDurationMs": 8000,
       "detectors": [
         { "id": "audio.yamnet", "weight": 0.4,
           "params": { "labels": ["Slap, smack", "Smash, crash",
@@ -97,9 +102,10 @@
     {
       "name": "Sword fight",
       "enabled": true,
-      "threshold": 0.7,
+      "threshold": 0.6,
       "padBeforeMs": 600,
       "padAfterMs": 800,
+      "maxDurationMs": 20000,
       "detectors": [
         { "id": "audio.yamnet", "weight": 0.3,
           "params": { "labels": ["Whoosh, swoosh, swish", "Clang"] } },
@@ -112,9 +118,10 @@
     {
       "name": "Chase",
       "enabled": true,
-      "threshold": 0.7,
+      "threshold": 0.6,
       "padBeforeMs": 800,
       "padAfterMs": 800,
+      "maxDurationMs": 20000,
       "detectors": [
         { "id": "audio.yamnet", "weight": 0.3,
           "params": { "labels": ["Heavy breathing",
@@ -128,13 +135,14 @@
     {
       "name": "Violence (general)",
       "enabled": true,
-      "threshold": 0.7,
+      "threshold": 0.6,
       "padBeforeMs": 600,
       "padAfterMs": 800,
+      "maxDurationMs": 15000,
       "detectors": [
         { "id": "audio.yamnet", "weight": 0.3,
           "params": { "labels": ["Slap, smack", "Smash, crash"] } },
-        { "id": "vision.clip", "weight": 0.8,
+        { "id": "vision.clip", "weight": 0.7,
           "params": { "prompts": ["a violent fight between two people",
                                    "blood on a person's face from injury",
                                    "a brutal beating with someone bleeding"] } }
@@ -143,10 +151,10 @@
     {
       "name": "Cruelty",
       "enabled": true,
-      "threshold": 0.8,
+      "threshold": 0.7,
       "padBeforeMs": 1000,
       "padAfterMs": 1000,
-      "maxDurationMs": 20000,
+      "maxDurationMs": 15000,
       "detectors": [
         { "id": "vision.clip", "weight": 1.0,
           "params": { "prompts": ["an adult physically attacking a child",
@@ -157,10 +165,10 @@
     {
       "name": "Pushing",
       "enabled": true,
-      "threshold": 0.8,
+      "threshold": 0.7,
       "padBeforeMs": 400,
       "padAfterMs": 600,
-      "maxDurationMs": 8000,
+      "maxDurationMs": 6000,
       "detectors": [
         { "id": "vision.clip", "weight": 1.0,
           "params": { "prompts": ["one person violently shoving another to the ground",
@@ -170,15 +178,16 @@
     {
       "name": "Kill / threat",
       "enabled": true,
-      "threshold": 0.65,
+      "threshold": 0.6,
       "padBeforeMs": 800,
       "padAfterMs": 1000,
+      "maxDurationMs": 15000,
       "detectors": [
         { "id": "vision.clip", "weight": 0.6,
           "params": { "prompts": ["a knife held to someone's throat",
                                    "a gun pointed at a person's head at close range",
                                    "a menacing villain threatening a victim with a weapon"] } },
-        { "id": "dialogue.whisper", "weight": 0.8,
+        { "id": "dialogue.whisper", "weight": 0.7,
           "params": { "labels": ["i'll kill you", "kill you", "going to die",
                                   "going to kill", "you're dead", "murder",
                                   "hunt you down", "shoot you", "stab you",

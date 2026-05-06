@@ -121,6 +121,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="Skip the CLIP vision pass even if installed")
     parser.add_argument("--no-whisper", action="store_true",
                         help="Skip the Whisper dialogue pass even if installed")
+    parser.add_argument("--threshold-mul", type=float, default=1.0,
+                        help="Multiplier on every category's threshold; "
+                             "values <1.0 are more sensitive (more suggestions), "
+                             ">1.0 are stricter. Default 1.0.")
     args = parser.parse_args(argv)
 
     input_path = args.input
@@ -151,6 +155,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"censorcut.analyze: could not load categories: {e}",
               file=sys.stderr)
         return 5
+
+    # Apply the global sensitivity multiplier to each category's threshold.
+    # Clamp the multiplier to a sane band; the UI offers 0.5..2.0.
+    threshold_mul = max(0.25, min(4.0, float(args.threshold_mul)))
+    if threshold_mul != 1.0:
+        for cat in categories:
+            t = float(cat.get("threshold", 0.5)) * threshold_mul
+            cat["threshold"] = max(0.0, min(1.0, t))
 
     # 1) Loudness pass — always.
     emit_progress(0.05, "loudness")

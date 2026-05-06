@@ -220,15 +220,21 @@ def run(input_path: str,
 
 
 def _flush_batch(torch, model, batch_imgs, text_feats, prompts, series, device):
-    """Encode a batch of images and append cosine-similarity scores."""
+    """Encode a batch of images and append rescaled-similarity scores.
+
+    Raw cosine similarity for L2-normalized CLIP features is bounded by
+    [-1, 1] but in practice lives in roughly [0.10, 0.40] — non-matches
+    cluster around 0.15-0.20, strong matches reach 0.30-0.40. The naive
+    ``(sim+1)/2`` map compresses that into 0.55-0.70, which is too tight
+    for downstream thresholding. Map the useful band [0.15, 0.35] linearly
+    onto [0, 1] instead, so a 'no match' is near 0 and a clear match is
+    above 0.7."""
     with torch.no_grad():
         imgs = torch.stack(batch_imgs).to(device)
         img_feats = model.encode_image(imgs)
         img_feats = img_feats / img_feats.norm(dim=-1, keepdim=True)
-        # Cosine similarity → [-1, 1]; map to [0, 1] so it's intuitive
-        # against thresholds (0.5 = "kinda matches", 0.8 = "clearly").
-        sims = (img_feats @ text_feats.T).cpu().numpy()
-        sims = (sims + 1.0) * 0.5  # rescale
+        raw = img_feats @ text_feats.T
+        sims = torch.clamp((raw - 0.15) / 0.20, 0.0, 1.0).cpu().numpy()
     for row in sims:
         for i, p in enumerate(prompts):
             series[p].append(float(row[i]))

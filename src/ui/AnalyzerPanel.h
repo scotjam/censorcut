@@ -11,6 +11,7 @@ class QFrame;
 class QLabel;
 class QProgressBar;
 class QPushButton;
+class QSlider;
 class QSpinBox;
 
 namespace censorcut {
@@ -90,6 +91,8 @@ private:
     QProgressBar* m_progress     = nullptr;
     QLabel*      m_phaseLabel    = nullptr;
     QLabel*      m_summaryLabel  = nullptr;
+    QSlider*     m_sensitivitySlider = nullptr;
+    QLabel*      m_sensitivityLabel  = nullptr;
 
     // Review section
     QFrame*      m_reviewFrame   = nullptr;

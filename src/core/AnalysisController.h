@@ -26,6 +26,12 @@ public:
 
     void setPythonPath(const QString& path);
 
+    /// Multiplier applied to every category's threshold before fusion.
+    /// Values <1.0 make the analyzer more sensitive (more suggestions),
+    /// >1.0 stricter. Default 1.0.
+    void   setThresholdMultiplier(double mul);
+    double thresholdMultiplier() const;
+
     bool isRunning() const;
 
     /// Start an analysis. inputPath is the source video. Returns false
@@ -60,6 +66,7 @@ private:
     QByteArray m_stdoutBuf;
     QByteArray m_stderrTail;
     bool       m_cancelled = false;
+    double     m_thresholdMul = 1.0;
 };
 
 } // namespace censorcut

@@ -79,6 +79,16 @@ void AnalysisController::setPythonPath(const QString& path)
     m_pythonPath = path;
 }
 
+void AnalysisController::setThresholdMultiplier(double mul)
+{
+    m_thresholdMul = mul;
+}
+
+double AnalysisController::thresholdMultiplier() const
+{
+    return m_thresholdMul;
+}
+
 bool AnalysisController::isRunning() const
 {
     return m_proc.state() != QProcess::NotRunning;
@@ -119,6 +129,10 @@ bool AnalysisController::start(const QString& inputPath)
         QStringLiteral("--input"), inputPath,
         QStringLiteral("--out"),   m_outPath,
     };
+    if (qFuzzyCompare(1.0 + m_thresholdMul, 1.0 + 1.0) == false) {
+        args << QStringLiteral("--threshold-mul")
+             << QString::number(m_thresholdMul, 'f', 3);
+    }
 
     m_proc.setWorkingDirectory(m_packageDir);
     m_proc.setProgram(m_pythonPath);

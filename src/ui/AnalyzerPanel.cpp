@@ -11,6 +11,8 @@
 #include <QLabel>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
+#include <QSlider>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
@@ -54,6 +56,41 @@ AnalyzerPanel::AnalyzerPanel(MarkerModel* markers,
     m_profileLabel->setWordWrap(true);
     m_profileLabel->setStyleSheet(QStringLiteral("color:#888;"));
     form->addRow(tr("Profile"), m_profileLabel);
+
+    // Sensitivity slider — multiplies every category's threshold.
+    // Range mapping: integer slider 50..200 → 0.5..2.0 multiplier.
+    auto* sensRow = new QHBoxLayout;
+    m_sensitivitySlider = new QSlider(Qt::Horizontal, this);
+    m_sensitivitySlider->setRange(50, 200);
+    m_sensitivitySlider->setSingleStep(5);
+    m_sensitivitySlider->setPageStep(10);
+    m_sensitivitySlider->setFocusPolicy(Qt::NoFocus);
+    {
+        QSettings s;
+        const double mul = s.value(QStringLiteral("analyzer/thresholdMul"), 1.0).toDouble();
+        m_sensitivitySlider->setValue(int(std::clamp(mul, 0.5, 2.0) * 100.0));
+    }
+    m_sensitivityLabel = new QLabel(this);
+    m_sensitivityLabel->setMinimumWidth(160);
+    sensRow->addWidget(m_sensitivitySlider, /*stretch=*/1);
+    sensRow->addWidget(m_sensitivityLabel);
+    auto updateSensLabel = [this]{
+        const double v = m_sensitivitySlider->value() / 100.0;
+        QString hint;
+        if (v < 0.85)      hint = tr("more sensitive");
+        else if (v > 1.15) hint = tr("stricter");
+        else               hint = tr("default");
+        m_sensitivityLabel->setText(tr("%1×  (%2)").arg(QString::number(v, 'f', 2), hint));
+    };
+    updateSensLabel();
+    connect(m_sensitivitySlider, &QSlider::valueChanged, this,
+            [this, updateSensLabel](int v) {
+        updateSensLabel();
+        QSettings s;
+        s.setValue(QStringLiteral("analyzer/thresholdMul"), v / 100.0);
+        if (m_controller) m_controller->setThresholdMultiplier(v / 100.0);
+    });
+    form->addRow(tr("Sensitivity"), sensRow);
 
     main->addLayout(form);
 
@@ -126,6 +163,11 @@ AnalyzerPanel::AnalyzerPanel(MarkerModel* markers,
     main->addStretch(1);
 
     m_controller = new AnalysisController(this);
+    {
+        QSettings s;
+        const double mul = s.value(QStringLiteral("analyzer/thresholdMul"), 1.0).toDouble();
+        m_controller->setThresholdMultiplier(std::clamp(mul, 0.25, 4.0));
+    }
     connect(m_controller, &AnalysisController::progressChanged, this, &AnalyzerPanel::onProgress);
     connect(m_controller, &AnalysisController::phaseChanged,    this, &AnalyzerPanel::onPhase);
     connect(m_controller, &AnalysisController::completed,       this, &AnalyzerPanel::onCompleted);

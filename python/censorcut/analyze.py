@@ -121,6 +121,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="Skip the CLIP vision pass even if installed")
     parser.add_argument("--no-whisper", action="store_true",
                         help="Skip the Whisper dialogue pass even if installed")
+    parser.add_argument("--no-fingerprint", action="store_true",
+                        help="Skip the 4-anchor audio fingerprint pass")
     parser.add_argument("--threshold-mul", type=float, default=1.0,
                         help="Multiplier on every category's threshold; "
                              "values <1.0 are more sensitive (more suggestions), "
@@ -232,6 +234,21 @@ def main(argv: Optional[List[str]] = None) -> int:
             series_by_key.update(out)
             whisper_used = True
 
+    # 4b) Audio fingerprint — independent of categories. Identifies the
+    #     film by content (loud non-voice anchors) so the federated DB
+    #     can index cuts without ever knowing titles.
+    fingerprint = {"anchors": []}
+    if not args.no_fingerprint:
+        try:
+            from .detectors import audio_fingerprint  # noqa: WPS433
+            emit_progress(0.85, "fingerprint")
+            fingerprint = audio_fingerprint.run(input_path,
+                                                duration_ms=duration_ms,
+                                                progress=emit_progress)
+        except Exception as e:
+            print(f"censorcut.analyze: fingerprint pass failed: {e}",
+                  file=sys.stderr)
+
     # 5) Fuse + emit suggestions per category.
     emit_progress(0.95, "fuse")
     all_suggestions: List[dict] = []
@@ -307,6 +324,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "rawScores":    raw_scores_out,
         "suggestions":  all_suggestions,
         "frameEmbeddings": suggestion_embeddings,
+        "fingerprint":  fingerprint,
     }
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

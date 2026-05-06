@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "comment": "Built-in categories. Tuning notes: YAMNet scores aren't well-calibrated, so audio.yamnet weights stay <= 0.5 — they corroborate a category rather than triggering it on their own. Vision.clip scores are now linearly remapped from raw cosine [0.15..0.35] to [0..1], so a strong visual match comfortably reaches 0.7+ and a non-match sits near 0. Thresholds in this file assume that calibration. The maxDurationMs field on each category drops suspiciously long runs (any single suggestion >maxDurationMs) since those are almost always calibration false-positives, not 90-minute scenes.",
+  "comment": "Built-in categories. Tuned so a strong M3 LUFS jump alone, or a strong YAMNet match plus modest visual corroboration, clears threshold for the audio-driven categories. CLIP-only categories (Cruelty/Pushing) stay strict at 0.7 because the prompts are inherently more interpretive. The Sensitivity slider in the Analyzer panel scales every threshold by 0.5x..2.0x — if a movie produces too many or too few suggestions, drag the slider rather than editing this file. The maxDurationMs field on each category drops runaway runs (any single suggestion >maxDurationMs) since those are almost always calibration false-positives, not 90-minute scenes.",
   "categories": [
     {
       "name": "Jump scare",
       "enabled": true,
-      "threshold": 0.6,
+      "threshold": 0.55,
       "padBeforeMs": 1000,
       "padAfterMs": 1500,
       "maxDurationMs": 6000,
       "detectors": [
-        { "id": "audio.lufs.jump", "weight": 0.4 },
-        { "id": "audio.yamnet", "weight": 0.3,
+        { "id": "audio.lufs.jump", "weight": 0.6 },
+        { "id": "audio.yamnet", "weight": 0.4,
           "params": { "labels": ["Screaming", "Gasp",
                                   "Smash, crash", "Bang", "Boom"] } },
         { "id": "vision.clip", "weight": 0.5,
@@ -28,9 +28,9 @@
       "padAfterMs": 800,
       "maxDurationMs": 12000,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 0.5,
+        { "id": "audio.yamnet", "weight": 0.6,
           "params": { "labels": ["Screaming"] } },
-        { "id": "vision.clip", "weight": 0.6,
+        { "id": "vision.clip", "weight": 0.5,
           "params": { "prompts": ["a person screaming in terror",
                                    "a child crying and screaming"] } }
       ]
@@ -38,7 +38,7 @@
     {
       "name": "Crying / sad",
       "enabled": true,
-      "threshold": 0.6,
+      "threshold": 0.55,
       "padBeforeMs": 500,
       "padAfterMs": 800,
       "maxDurationMs": 15000,
@@ -54,14 +54,14 @@
     {
       "name": "Yelling",
       "enabled": true,
-      "threshold": 0.6,
+      "threshold": 0.55,
       "padBeforeMs": 400,
       "padAfterMs": 600,
       "maxDurationMs": 10000,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 0.4,
+        { "id": "audio.yamnet", "weight": 0.5,
           "params": { "labels": ["Yell", "Shout", "Battle cry"] } },
-        { "id": "vision.clip", "weight": 0.5,
+        { "id": "vision.clip", "weight": 0.4,
           "params": { "prompts": ["an angry person yelling at someone",
                                    "an aggressive face shouting"] } }
       ]
@@ -69,15 +69,15 @@
     {
       "name": "Gunfire",
       "enabled": true,
-      "threshold": 0.55,
+      "threshold": 0.5,
       "padBeforeMs": 600,
       "padAfterMs": 800,
       "maxDurationMs": 10000,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 0.5,
+        { "id": "audio.yamnet", "weight": 0.6,
           "params": { "labels": ["Gunshot, gunfire", "Machine gun",
                                   "Artillery fire", "Fusillade", "Cannon"] } },
-        { "id": "vision.clip", "weight": 0.6,
+        { "id": "vision.clip", "weight": 0.5,
           "params": { "prompts": ["a person aiming a gun at someone",
                                    "a person firing a handgun",
                                    "a soldier shooting a rifle"] } }
@@ -86,15 +86,15 @@
     {
       "name": "Hitting / impacts",
       "enabled": true,
-      "threshold": 0.6,
+      "threshold": 0.55,
       "padBeforeMs": 400,
       "padAfterMs": 600,
       "maxDurationMs": 8000,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 0.4,
+        { "id": "audio.yamnet", "weight": 0.5,
           "params": { "labels": ["Slap, smack", "Smash, crash",
                                   "Glass", "Breaking"] } },
-        { "id": "vision.clip", "weight": 0.6,
+        { "id": "vision.clip", "weight": 0.5,
           "params": { "prompts": ["a person punching another person in the face",
                                    "a person being hit hard"] } }
       ]
@@ -102,12 +102,12 @@
     {
       "name": "Sword fight",
       "enabled": true,
-      "threshold": 0.6,
+      "threshold": 0.55,
       "padBeforeMs": 600,
       "padAfterMs": 800,
       "maxDurationMs": 20000,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 0.3,
+        { "id": "audio.yamnet", "weight": 0.4,
           "params": { "labels": ["Whoosh, swoosh, swish", "Clang"] } },
         { "id": "vision.clip", "weight": 0.7,
           "params": { "prompts": ["two people sword fighting with blades",
@@ -118,7 +118,7 @@
     {
       "name": "Chase",
       "enabled": true,
-      "threshold": 0.6,
+      "threshold": 0.55,
       "padBeforeMs": 800,
       "padAfterMs": 800,
       "maxDurationMs": 20000,
@@ -135,12 +135,12 @@
     {
       "name": "Violence (general)",
       "enabled": true,
-      "threshold": 0.6,
+      "threshold": 0.55,
       "padBeforeMs": 600,
       "padAfterMs": 800,
       "maxDurationMs": 15000,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 0.3,
+        { "id": "audio.yamnet", "weight": 0.4,
           "params": { "labels": ["Slap, smack", "Smash, crash"] } },
         { "id": "vision.clip", "weight": 0.7,
           "params": { "prompts": ["a violent fight between two people",
@@ -178,7 +178,7 @@
     {
       "name": "Kill / threat",
       "enabled": true,
-      "threshold": 0.6,
+      "threshold": 0.55,
       "padBeforeMs": 800,
       "padAfterMs": 1000,
       "maxDurationMs": 15000,

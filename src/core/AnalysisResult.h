@@ -25,6 +25,17 @@ struct Suggestion {
     QStringList reasons;
 };
 
+/// Per-category fusion summary. Helps the user see *why* no suggestions
+/// fired (e.g. "Cruelty peaked at 0.42, threshold 0.7 — try lower
+/// Sensitivity").
+struct CategoryDiagnostic {
+    QString category;
+    double  peak                 = 0.0;
+    double  threshold            = 0.0;
+    int     aboveCount           = 0;
+    int     suggestionsEmitted   = 0;
+};
+
 /// Result of running the analyzer over a source video. Per-second raw
 /// scores are kept so the host UI can re-threshold (or apply a different
 /// age profile) without re-running ML.
@@ -33,6 +44,11 @@ struct AnalysisResult {
     qint64                          durationMs    = 0;
     QHash<QString, ScoreSeries>     rawScores;     // detector key -> series
     QList<Suggestion>               suggestions;
+    QList<CategoryDiagnostic>       diagnostics;
+    bool                            yamnetUsed  = false;
+    bool                            clipUsed    = false;
+    bool                            whisperUsed = false;
+    double                          thresholdMul = 1.0;
 
     [[nodiscard]] bool isEmpty() const {
         return suggestions.isEmpty() && rawScores.isEmpty();

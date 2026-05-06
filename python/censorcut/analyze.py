@@ -224,12 +224,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     # 5) Fuse + emit suggestions per category.
     emit_progress(0.95, "fuse")
     all_suggestions: List[dict] = []
+    diagnostics: List[dict] = []
+    print("censorcut.analyze: detector availability — "
+          f"yamnet={yamnet_used}  clip={clip_used}  whisper={whisper_used}",
+          file=sys.stderr)
+    print(f"censorcut.analyze: applying threshold multiplier {threshold_mul:.2f}",
+          file=sys.stderr)
+    print("censorcut.analyze: per-category fusion summary:", file=sys.stderr)
     for cat in categories:
         if not cat.get("enabled", True):
             continue
         fused = cat_mod.fuse_category(cat, series_by_key, duration_ms=duration_ms)
         suggestions = cat_mod.fused_to_suggestions(cat, fused,
                                                    duration_ms=duration_ms)
+        peak = max(fused) if fused else 0.0
+        threshold = float(cat.get("threshold", 0.5))
+        n_above = sum(1 for v in fused if v >= threshold)
+        print(f"  {cat['name']:24s} peak={peak:.2f} thr={threshold:.2f} "
+              f"above={n_above:5d}  -> {len(suggestions)} suggestion(s)",
+              file=sys.stderr)
+        diagnostics.append({
+            "category":          cat["name"],
+            "peak":              round(peak, 3),
+            "threshold":         round(threshold, 3),
+            "aboveCount":        n_above,
+            "suggestionsEmitted": len(suggestions),
+        })
         all_suggestions.extend(suggestions)
 
     # Merge any overlapping ranges within each category (cheap).
@@ -251,6 +271,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "yamnetUsed":   yamnet_used,
         "clipUsed":     clip_used,
         "whisperUsed":  whisper_used,
+        "thresholdMul": threshold_mul,
+        "categoryDiagnostics": diagnostics,
         "rawScores":    raw_scores_out,
         "suggestions":  all_suggestions,
     }

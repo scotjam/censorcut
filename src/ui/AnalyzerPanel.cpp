@@ -296,10 +296,37 @@ void AnalyzerPanel::onCompleted(const AnalysisResult& result)
     const double pct = result.durationMs > 0
         ? 100.0 * double(totalMs) / double(result.durationMs) : 0.0;
 
-    m_summaryLabel->setText(tr("Found %1 suggestion(s) covering %2 of runtime. "
-                               "Review and Confirm/Reject in the marker list or timeline.")
-                                .arg(added)
-                                .arg(QString::number(pct, 'f', 1) + QStringLiteral("%")));
+    QStringList lines;
+    lines << tr("Found %1 suggestion(s) covering %2 of runtime.")
+                  .arg(added)
+                  .arg(QString::number(pct, 'f', 1) + QStringLiteral("%"));
+    QStringList detLines;
+    if (result.yamnetUsed)  detLines << QStringLiteral("YAMNet");
+    if (result.clipUsed)    detLines << QStringLiteral("CLIP");
+    if (result.whisperUsed) detLines << QStringLiteral("Whisper");
+    if (!detLines.isEmpty())
+        lines << tr("Detectors used: %1.").arg(detLines.join(QStringLiteral(", ")));
+    if (added == 0 && !result.diagnostics.isEmpty()) {
+        // Show the categories closest to firing so the user knows whether
+        // to lower Sensitivity or accept "no scary content found here".
+        QList<CategoryDiagnostic> sorted = result.diagnostics;
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const CategoryDiagnostic& a, const CategoryDiagnostic& b) {
+                      return (a.peak - a.threshold) > (b.peak - b.threshold);
+                  });
+        QStringList top;
+        for (int i = 0; i < std::min<int>(3, sorted.size()); ++i) {
+            const auto& d = sorted.at(i);
+            top << QStringLiteral("%1: peak %2 vs %3")
+                       .arg(d.category)
+                       .arg(QString::number(d.peak, 'f', 2))
+                       .arg(QString::number(d.threshold, 'f', 2));
+        }
+        lines << tr("Closest categories — %1. "
+                    "Drag Sensitivity below 1.00× to find more.")
+                    .arg(top.join(QStringLiteral("; ")));
+    }
+    m_summaryLabel->setText(lines.join(QStringLiteral("\n")));
     m_phaseLabel->setText(tr("Done."));
 }
 

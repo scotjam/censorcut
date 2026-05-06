@@ -20,6 +20,24 @@ AnalysisResult parseAnalysisResultJson(const QByteArray& jsonBytes, QString* err
 
     result.schemaVersion = j.value("schemaVersion", 1);
     result.durationMs    = j.value("durationMs", qint64{0});
+    result.yamnetUsed    = j.value("yamnetUsed",  false);
+    result.clipUsed      = j.value("clipUsed",    false);
+    result.whisperUsed   = j.value("whisperUsed", false);
+    result.thresholdMul  = j.value("thresholdMul", 1.0);
+
+    if (j.contains("categoryDiagnostics") && j.at("categoryDiagnostics").is_array()) {
+        for (const auto& dj : j.at("categoryDiagnostics")) {
+            if (!dj.is_object()) continue;
+            CategoryDiagnostic d;
+            d.category           = QString::fromStdString(
+                dj.value("category", std::string{}));
+            d.peak               = dj.value("peak",      0.0);
+            d.threshold          = dj.value("threshold", 0.0);
+            d.aboveCount         = dj.value("aboveCount", 0);
+            d.suggestionsEmitted = dj.value("suggestionsEmitted", 0);
+            result.diagnostics.append(d);
+        }
+    }
 
     if (j.contains("rawScores") && j.at("rawScores").is_object()) {
         for (auto it = j.at("rawScores").begin(); it != j.at("rawScores").end(); ++it) {

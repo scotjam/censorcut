@@ -21,6 +21,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod crypto;
+mod network;
 mod schema;
 mod sink;
 mod wire;
@@ -108,6 +109,18 @@ enum Cmd {
     /// Print the local identity's public key (hex). Creates the
     /// identity file if absent.
     Whoami,
+
+    /// Run the iroh-gossip transport: subscribes to the censorcut
+    /// feedback topic, broadcasts new rows from the local feedback
+    /// file as they appear, and pipes incoming envelopes through the
+    /// same verify+sink path.
+    Gossip {
+        /// Bootstrap peer specs, one per `--bootstrap` (repeatable).
+        /// Format: `<NodeId>` or `<NodeId>@<host:port>`. Without any,
+        /// we wait passively for inbound peers.
+        #[arg(long, value_name = "NODEID[@HOST:PORT]")]
+        bootstrap: Vec<String>,
+    },
 }
 
 fn default_feedback_path() -> PathBuf {
@@ -177,7 +190,8 @@ fn load_schema_cfg(extra_file: Option<&PathBuf>) -> Result<SchemaConfig> {
     Ok(cfg)
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     let limits = sink::SinkLimits {
         max_total_bytes:                   cli.max_peers_bytes,
@@ -260,6 +274,19 @@ fn main() -> Result<()> {
         Cmd::Whoami => {
             let id = crypto::Identity::load_or_create(&cli.identity)?;
             println!("{}", id.public_hex());
+        }
+
+        Cmd::Gossip { bootstrap } => {
+            let opts = network::GossipOptions {
+                identity_path: cli.identity.clone(),
+                feedback_path: cli.feedback.clone(),
+                peers_path:    cli.peers.clone(),
+                proposed_path: cli.proposed.clone(),
+                bootstrap,
+                limits,
+                schema_cfg,
+            };
+            network::run(opts).await?;
         }
     }
     Ok(())

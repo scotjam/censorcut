@@ -23,6 +23,15 @@ thiserror = "1"
 ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8", "pem"] }
 rand = "0.8"
 
+# Networking — iroh + iroh-gossip provide a topic-based gossip protocol
+# over QUIC with NAT traversal. Both are MIT/Apache 2.0 dual-licensed.
+# tokio is needed for the async runtime; futures gives us StreamExt.
+iroh = "0.91"
+iroh-gossip = { version = "0.91", features = ["net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "sync", "signal", "time", "io-util", "process"] }
+futures = "0.3"
+notify = "6"
+
 [dev-dependencies]
 tempfile = "3"
 

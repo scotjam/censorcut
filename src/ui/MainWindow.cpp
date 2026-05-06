@@ -626,9 +626,8 @@ void MainWindow::maybeShowDisclaimer()
         "(<code>~/.censorcut/feedback.jsonl</code>). On every future "
         "analysis — on any movie — the analyzer reads that file to "
         "down-weight scenes similar to ones you've rejected and prefer "
-        "scenes similar to ones you've accepted. Nothing leaves your "
-        "machine in this version. Use <i>File → Forget Suggestion "
-        "Feedback…</i> to wipe the file.<br><br>"
+        "scenes similar to ones you've accepted. Use <i>File → Forget "
+        "Suggestion Feedback…</i> to wipe the file.<br><br>"
         "The software is provided <b>as is</b>, with no warranty. "
         "No responsibility can be taken for any data loss."));
     box.setStandardButtons(QMessageBox::Ok | QMessageBox::Close);

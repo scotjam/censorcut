@@ -84,3 +84,7 @@ third_party/vlc-*.tar.gz
 
 # Per-developer Claude Code permission cache
 .claude/settings.local.json
+
+# Rust build artefacts (sync/ subprocess)
+sync/target/
+sync/Cargo.lock

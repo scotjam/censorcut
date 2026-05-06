@@ -1,0 +1,28 @@
+[package]
+name = "censorcut-sync"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Peer-to-peer sync sidecar for the CensorCut editor"
+publish = false
+
+# M7.5.1 carries only the local validation + cap logic. iroh / iroh-gossip
+# / signing dependencies land in M7.5.2; keeping them out of v0.1 means
+# this slice builds and tests on any machine without pulling in the full
+# networking stack.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "censorcut-sync"
+path = "src/main.rs"

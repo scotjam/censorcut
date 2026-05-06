@@ -169,6 +169,13 @@ void MainWindow::buildMenus()
     connect(exportAction, &QAction::triggered, this, &MainWindow::onExportProject);
 
     fileMenu->addSeparator();
+    auto* forgetAction = fileMenu->addAction(
+        QStringLiteral("Forget Suggestion &Feedback..."));
+    forgetAction->setStatusTip(tr("Delete the locally-stored accept/reject history "
+                                   "used to bias future suggestions."));
+    connect(forgetAction, &QAction::triggered, this, &MainWindow::onForgetFeedback);
+
+    fileMenu->addSeparator();
     auto* quitAction = fileMenu->addAction(QStringLiteral("&Quit"));
     quitAction->setShortcut(QKeySequence::Quit);
     connect(quitAction, &QAction::triggered, this, &QWidget::close);
@@ -477,6 +484,34 @@ void MainWindow::onExportProject()
     m_exportQueue->enqueue(p, dlg.outputPath(), dlg.quality());
 }
 
+void MainWindow::onForgetFeedback()
+{
+    if (!m_feedback) return;
+    const int n = m_feedback->storedRowCount();
+    if (n <= 0) {
+        QMessageBox::information(this, tr("No feedback to forget"),
+            tr("No suggestion feedback has been recorded yet."));
+        return;
+    }
+    const auto reply = QMessageBox::question(
+        this, tr("Forget suggestion feedback?"),
+        tr("Delete the locally-stored accept/reject history "
+           "(%1 record(s))?\n\n"
+           "Future analyses will start fresh — your previous decisions "
+           "won't bias suggestions until you confirm or reject more "
+           "markers.\n\n"
+           "This cannot be undone.").arg(n),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes) return;
+
+    if (m_feedback->forgetAll()) {
+        statusBar()->showMessage(tr("Feedback wiped (%1 record(s) removed).").arg(n), 4000);
+    } else {
+        QMessageBox::warning(this, tr("Could not delete file"),
+            tr("Failed to remove %1.").arg(m_feedback->storagePath()));
+    }
+}
+
 void MainWindow::onMarkStart()
 {
     if (m_playback->duration() <= 0) return;
@@ -564,7 +599,7 @@ void MainWindow::onTimelineScrubbed(qint64 ms)
 
 void MainWindow::maybeShowDisclaimer()
 {
-    static const QString kCurrentVersion = QStringLiteral("1");
+    static const QString kCurrentVersion = QStringLiteral("2");
     QSettings settings;
     if (settings.value(QStringLiteral("disclaimer/acceptedVersion")).toString()
         == kCurrentVersion) {
@@ -581,10 +616,19 @@ void MainWindow::maybeShowDisclaimer()
         "children can be shown. It should only be used to <i>further</i> "
         "censor videos that are already legally able to be shown to "
         "children at the appropriate age.<br><br>"
-        "Automated detection (M3 onwards) may miss things, make mistakes, "
-        "or hallucinate content that isn't there. It may also cut more "
-        "than is necessary. <b>Review every suggestion before exporting.</b>"
+        "Automated detection may miss things, make mistakes, or hallucinate "
+        "content that isn't there. It may also cut more than is necessary. "
+        "<b>Review every suggestion before exporting.</b>"
         "<br><br>"
+        "<b>Local learning.</b> When you accept or reject a suggested cut, "
+        "the analyzer's semantic vector for that scene plus the decision is "
+        "written to a local file under your home directory "
+        "(<code>~/.censorcut/feedback.jsonl</code>). On every future "
+        "analysis — on any movie — the analyzer reads that file to "
+        "down-weight scenes similar to ones you've rejected and prefer "
+        "scenes similar to ones you've accepted. Nothing leaves your "
+        "machine in this version. Use <i>File → Forget Suggestion "
+        "Feedback…</i> to wipe the file.<br><br>"
         "The software is provided <b>as is</b>, with no warranty. "
         "No responsibility can be taken for any data loss."));
     box.setStandardButtons(QMessageBox::Ok | QMessageBox::Close);

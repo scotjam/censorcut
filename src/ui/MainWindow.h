@@ -35,6 +35,7 @@ private slots:
     void onOpenFile();
     void onSaveSidecar();
     void onExportProject();
+    void onForgetFeedback();
     void onMarkStart();
     void onMarkEnd();
     void onPositionChanged(qint64 ms);

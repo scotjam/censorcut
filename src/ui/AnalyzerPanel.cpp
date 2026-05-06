@@ -57,8 +57,10 @@ AnalyzerPanel::AnalyzerPanel(MarkerModel* markers,
     m_profileLabel->setStyleSheet(QStringLiteral("color:#888;"));
     form->addRow(tr("Profile"), m_profileLabel);
 
-    // Sensitivity slider — multiplies every category's threshold.
-    // Range mapping: integer slider 50..200 → 0.5..2.0 multiplier.
+    // Sensitivity slider — high = MORE sensitive = MORE suggestions.
+    // Slider integer 50..200 -> 0.5x..2.0x sensitivity.
+    // Internally we pass --threshold-mul = 1 / sensitivity to the analyzer
+    // (so 2.0x sensitivity halves every threshold, 0.5x doubles them).
     auto* sensRow = new QHBoxLayout;
     m_sensitivitySlider = new QSlider(Qt::Horizontal, this);
     m_sensitivitySlider->setRange(50, 200);
@@ -67,28 +69,29 @@ AnalyzerPanel::AnalyzerPanel(MarkerModel* markers,
     m_sensitivitySlider->setFocusPolicy(Qt::NoFocus);
     {
         QSettings s;
-        const double mul = s.value(QStringLiteral("analyzer/thresholdMul"), 1.0).toDouble();
-        m_sensitivitySlider->setValue(int(std::clamp(mul, 0.5, 2.0) * 100.0));
+        const double sens = s.value(QStringLiteral("analyzer/sensitivity"), 1.0).toDouble();
+        m_sensitivitySlider->setValue(int(std::clamp(sens, 0.5, 2.0) * 100.0));
     }
     m_sensitivityLabel = new QLabel(this);
-    m_sensitivityLabel->setMinimumWidth(160);
+    m_sensitivityLabel->setMinimumWidth(180);
     sensRow->addWidget(m_sensitivitySlider, /*stretch=*/1);
     sensRow->addWidget(m_sensitivityLabel);
     auto updateSensLabel = [this]{
-        const double v = m_sensitivitySlider->value() / 100.0;
+        const double sens = m_sensitivitySlider->value() / 100.0;
         QString hint;
-        if (v < 0.85)      hint = tr("more sensitive");
-        else if (v > 1.15) hint = tr("stricter");
-        else               hint = tr("default");
-        m_sensitivityLabel->setText(tr("%1×  (%2)").arg(QString::number(v, 'f', 2), hint));
+        if (sens > 1.15)      hint = tr("more sensitive — finds more");
+        else if (sens < 0.85) hint = tr("stricter — finds fewer");
+        else                  hint = tr("default");
+        m_sensitivityLabel->setText(tr("%1×  (%2)").arg(QString::number(sens, 'f', 2), hint));
     };
     updateSensLabel();
     connect(m_sensitivitySlider, &QSlider::valueChanged, this,
             [this, updateSensLabel](int v) {
         updateSensLabel();
+        const double sens = v / 100.0;
         QSettings s;
-        s.setValue(QStringLiteral("analyzer/thresholdMul"), v / 100.0);
-        if (m_controller) m_controller->setThresholdMultiplier(v / 100.0);
+        s.setValue(QStringLiteral("analyzer/sensitivity"), sens);
+        if (m_controller) m_controller->setThresholdMultiplier(1.0 / sens);
     });
     form->addRow(tr("Sensitivity"), sensRow);
 
@@ -165,8 +168,10 @@ AnalyzerPanel::AnalyzerPanel(MarkerModel* markers,
     m_controller = new AnalysisController(this);
     {
         QSettings s;
-        const double mul = s.value(QStringLiteral("analyzer/thresholdMul"), 1.0).toDouble();
-        m_controller->setThresholdMultiplier(std::clamp(mul, 0.25, 4.0));
+        const double sens = std::clamp(
+            s.value(QStringLiteral("analyzer/sensitivity"), 1.0).toDouble(),
+            0.25, 4.0);
+        m_controller->setThresholdMultiplier(1.0 / sens);
     }
     connect(m_controller, &AnalysisController::progressChanged, this, &AnalyzerPanel::onProgress);
     connect(m_controller, &AnalysisController::phaseChanged,    this, &AnalyzerPanel::onPhase);
@@ -323,7 +328,7 @@ void AnalyzerPanel::onCompleted(const AnalysisResult& result)
                        .arg(QString::number(d.threshold, 'f', 2));
         }
         lines << tr("Closest categories — %1. "
-                    "Drag Sensitivity below 1.00× to find more.")
+                    "Drag Sensitivity above 1.00× to find more.")
                     .arg(top.join(QStringLiteral("; ")));
     }
     m_summaryLabel->setText(lines.join(QStringLiteral("\n")));

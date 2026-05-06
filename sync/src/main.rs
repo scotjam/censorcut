@@ -20,8 +20,10 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+mod crypto;
 mod schema;
 mod sink;
+mod wire;
 
 use schema::SchemaConfig;
 
@@ -74,6 +76,12 @@ struct Cli {
     #[arg(long)]
     accepted_categories_file: Option<PathBuf>,
 
+    /// Path to the persistent ed25519 identity (32-byte secret seed).
+    /// Created on first run; deleting it gives this installation a
+    /// fresh peer key on next launch.
+    #[arg(long, default_value_os_t = default_identity_path())]
+    identity: PathBuf,
+
     #[command(subcommand)]
     command: Cmd,
 }
@@ -85,6 +93,21 @@ enum Cmd {
     /// and append accepted rows to the peers file. Useful for tests
     /// and as a stepping stone for the iroh-gossip sink.
     ValidateStdin,
+
+    /// Read one feedback-row JSON from stdin, sign it with the local
+    /// identity, and write the wire envelope to stdout. Generates the
+    /// identity file if absent.
+    Sign,
+
+    /// Read one wire envelope from stdin, verify the signature, and
+    /// run the inner row through the same sink path the gossip
+    /// transport will use. Exit code is non-zero on signature or sink
+    /// failure.
+    VerifyStdin,
+
+    /// Print the local identity's public key (hex). Creates the
+    /// identity file if absent.
+    Whoami,
 }
 
 fn default_feedback_path() -> PathBuf {
@@ -109,6 +132,14 @@ fn default_proposed_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     home.join(".censorcut").join("proposed.jsonl")
+}
+
+fn default_identity_path() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".censorcut").join("identity.key")
 }
 
 fn load_schema_cfg(extra_file: Option<&PathBuf>) -> Result<SchemaConfig> {
@@ -166,14 +197,10 @@ fn main() -> Result<()> {
                 let line = line?;
                 let line = line.trim();
                 if line.is_empty() { continue; }
-
-                // Format: "<peer_key> <json>" or just "<json>" (peer_key
-                // defaults to "self" for local-loopback testing).
                 let (peer_key, raw_json) = match line.find(' ') {
                     Some(idx) => (&line[..idx], &line[idx + 1..]),
                     None      => ("self", line),
                 };
-
                 match sink.try_accept(raw_json, peer_key) {
                     Ok(stored)  => eprintln!("accepted fp={} peer={}",
                                              &stored.fingerprint[..12], stored.peer_key),
@@ -181,6 +208,58 @@ fn main() -> Result<()> {
                 }
             }
             eprintln!("stats: {:?}", sink.stats);
+        }
+
+        Cmd::Sign => {
+            let id = crypto::Identity::load_or_create(&cli.identity)?;
+            let mut row = String::new();
+            io::stdin().lock().read_line(&mut row)?;
+            let row = row.trim_end_matches(&['\r','\n'][..]);
+            if row.is_empty() {
+                anyhow::bail!("expected a feedback-row JSON on stdin");
+            }
+            let env = wire::seal(row, &id);
+            println!("{}", wire::to_line(&env)?);
+        }
+
+        Cmd::VerifyStdin => {
+            let mut sink = sink::PeerSink::open_with_proposed(
+                &cli.peers, Some(&cli.proposed), limits, schema_cfg)?;
+            let stdin = io::stdin();
+            let mut accepted = 0u64;
+            let mut rejected = 0u64;
+            for line in stdin.lock().lines() {
+                let line = line?;
+                let line = line.trim();
+                if line.is_empty() { continue; }
+                match wire::open(line) {
+                    Ok((row_json, peer_key)) => {
+                        match sink.try_accept(&row_json, &peer_key) {
+                            Ok(stored) => {
+                                accepted += 1;
+                                eprintln!("accepted fp={} peer={}…",
+                                          &stored.fingerprint[..12],
+                                          &stored.peer_key[..16.min(stored.peer_key.len())]);
+                            }
+                            Err(e) => {
+                                rejected += 1;
+                                eprintln!("sink rejected: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        rejected += 1;
+                        eprintln!("envelope rejected: {}", e);
+                    }
+                }
+            }
+            eprintln!("verify-stdin: accepted={} rejected={} stats={:?}",
+                      accepted, rejected, sink.stats);
+        }
+
+        Cmd::Whoami => {
+            let id = crypto::Identity::load_or_create(&cli.identity)?;
+            println!("{}", id.public_hex());
         }
     }
     Ok(())

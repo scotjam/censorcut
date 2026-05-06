@@ -72,6 +72,24 @@ AnalysisResult parseAnalysisResultJson(const QByteArray& jsonBytes, QString* err
         }
     }
 
+    if (j.contains("fingerprint") && j.at("fingerprint").is_object()) {
+        const auto& fj = j.at("fingerprint");
+        FilmFingerprint fp;
+        fp.durationMs = fj.value("durationMs", qint64{0});
+        fp.digest     = QString::fromStdString(fj.value("fingerprint", std::string{}));
+        if (fj.contains("anchors") && fj.at("anchors").is_array()) {
+            for (const auto& aj : fj.at("anchors")) {
+                if (!aj.is_object()) continue;
+                FingerprintAnchor a;
+                a.tMs      = aj.value("tMs",      qint64{0});
+                a.peakLufs = aj.value("peakLufs", 0.0);
+                a.sig      = QString::fromStdString(aj.value("sig", std::string{}));
+                if (a.tMs >= 0 && !a.sig.isEmpty()) fp.anchors.append(a);
+            }
+        }
+        result.fingerprint = fp;
+    }
+
     if (j.contains("suggestions") && j.at("suggestions").is_array()) {
         for (const auto& sj : j.at("suggestions")) {
             if (!sj.is_object()) continue;

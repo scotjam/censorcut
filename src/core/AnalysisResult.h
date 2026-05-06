@@ -44,6 +44,24 @@ struct FrameEmbedding {
     QVector<float>  vec;  // typically 768 or 1024 floats
 };
 
+/// One anchor inside an audio fingerprint: a loud non-voice peak time
+/// plus its 64-bit spectral signature (16 hex chars).
+struct FingerprintAnchor {
+    qint64  tMs       = 0;
+    double  peakLufs  = 0.0;
+    QString sig;       // 16-char hex; "0000000000000000" if no signature
+};
+
+/// Content-derived film identifier built from 4 audio anchors. Two
+/// fingerprints can be compared (FilmFingerprint::matches) to decide
+/// whether two files contain the same film and at what time offset.
+struct FilmFingerprint {
+    qint64                       durationMs = 0;
+    QString                      digest;   // sha256 of all 4 sig values
+    QList<FingerprintAnchor>     anchors;
+    [[nodiscard]] bool isValid() const { return !anchors.isEmpty(); }
+};
+
 /// Result of running the analyzer over a source video. Per-second raw
 /// scores are kept so the host UI can re-threshold (or apply a different
 /// age profile) without re-running ML.
@@ -54,6 +72,7 @@ struct AnalysisResult {
     QList<Suggestion>               suggestions;
     QList<CategoryDiagnostic>       diagnostics;
     QList<FrameEmbedding>           frameEmbeddings;
+    FilmFingerprint                 fingerprint;
     bool                            yamnetUsed  = false;
     bool                            clipUsed    = false;
     bool                            whisperUsed = false;

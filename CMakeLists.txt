@@ -80,6 +80,8 @@ add_library(censorcut_core STATIC
     src/core/SubtitleProcessor.cpp
     src/core/FeedbackStore.h
     src/core/FeedbackStore.cpp
+    src/core/FingerprintMatcher.h
+    src/core/FingerprintMatcher.cpp
 )
 target_include_directories(censorcut_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -139,5 +141,9 @@ if(CENSORCUT_BUILD_TESTS)
         qt_add_executable(test_subtitle_processor tests/test_subtitle_processor.cpp)
         target_link_libraries(test_subtitle_processor PRIVATE censorcut_core Qt6::Test)
         add_test(NAME subtitle_processor COMMAND test_subtitle_processor)
+
+        qt_add_executable(test_fingerprint_matcher tests/test_fingerprint_matcher.cpp)
+        target_link_libraries(test_fingerprint_matcher PRIVATE censorcut_core Qt6::Test)
+        add_test(NAME fingerprint_matcher COMMAND test_fingerprint_matcher)
     endif()
 endif()

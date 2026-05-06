@@ -36,6 +36,14 @@ struct CategoryDiagnostic {
     int     suggestionsEmitted   = 0;
 };
 
+/// One frame's L2-normalized CLIP embedding, kept only for frames inside
+/// emitted suggestions so the feedback loop can persist it on accept/
+/// reject without ballooning the JSON.
+struct FrameEmbedding {
+    qint64          timeMs = 0;
+    QVector<float>  vec;  // typically 768 or 1024 floats
+};
+
 /// Result of running the analyzer over a source video. Per-second raw
 /// scores are kept so the host UI can re-threshold (or apply a different
 /// age profile) without re-running ML.
@@ -45,6 +53,7 @@ struct AnalysisResult {
     QHash<QString, ScoreSeries>     rawScores;     // detector key -> series
     QList<Suggestion>               suggestions;
     QList<CategoryDiagnostic>       diagnostics;
+    QList<FrameEmbedding>           frameEmbeddings;
     bool                            yamnetUsed  = false;
     bool                            clipUsed    = false;
     bool                            whisperUsed = false;

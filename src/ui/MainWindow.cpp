@@ -6,6 +6,7 @@
 #include "TimelineWidget.h"
 #include "VideoSurface.h"
 #include "core/ExportQueue.h"
+#include "core/FeedbackStore.h"
 #include "core/MarkerModel.h"
 #include "core/PlaybackController.h"
 #include "core/Project.h"
@@ -64,6 +65,7 @@ MainWindow::MainWindow(QWidget* parent)
     m_playback     = std::make_unique<PlaybackController>(this);
     m_markers      = new MarkerModel(this);
     m_exportQueue  = new ExportQueue(this);
+    m_feedback     = new FeedbackStore(this);
 
     buildUi();
     buildMenus();
@@ -130,7 +132,7 @@ void MainWindow::buildUi()
     m_markerList->setContextMenuPolicy(Qt::CustomContextMenu);
     m_markerList->setSelectionMode(QAbstractItemView::ExtendedSelection);
 
-    m_analyzer = new AnalyzerPanel(m_markers, m_playback.get(), splitter);
+    m_analyzer = new AnalyzerPanel(m_markers, m_playback.get(), m_feedback, splitter);
 
     splitter->addWidget(m_markerList);
     splitter->addWidget(m_analyzer);
@@ -645,9 +647,13 @@ void MainWindow::onMarkerListContextMenu(const QPoint& pos)
         } else if (chosen == confirm) {
             Marker copy = *m; copy.status = Status::Confirmed;
             m_markers->updateMarkerById(ids.first(), copy);
+            if (m_feedback && m->source == Source::Suggested)
+                m_feedback->recordDecision(copy, FeedbackStore::Decision::Accepted);
         } else if (chosen == reject) {
             Marker copy = *m; copy.status = Status::Rejected;
             m_markers->updateMarkerById(ids.first(), copy);
+            if (m_feedback && m->source == Source::Suggested)
+                m_feedback->recordDecision(copy, FeedbackStore::Decision::Rejected);
         } else if (chosen == del) {
             m_markers->removeMarkerById(ids.first());
         }
@@ -665,6 +671,9 @@ void MainWindow::onMarkerListContextMenu(const QPoint& pos)
 
     if (chosen == confirmAll || chosen == rejectAll) {
         const Status target = (chosen == confirmAll) ? Status::Confirmed : Status::Rejected;
+        const auto decision = (target == Status::Confirmed)
+            ? FeedbackStore::Decision::Accepted
+            : FeedbackStore::Decision::Rejected;
         for (const QUuid& id : ids) {
             auto m = m_markers->findById(id);
             if (!m) continue;
@@ -672,6 +681,8 @@ void MainWindow::onMarkerListContextMenu(const QPoint& pos)
             Marker copy = *m;
             copy.status = target;
             m_markers->updateMarkerById(id, copy);
+            if (m_feedback && m->source == Source::Suggested)
+                m_feedback->recordDecision(copy, decision);
         }
     } else if (chosen == deleteAll) {
         for (const QUuid& id : ids) m_markers->removeMarkerById(id);

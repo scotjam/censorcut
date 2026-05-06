@@ -78,6 +78,8 @@ add_library(censorcut_core STATIC
     src/core/AnalysisController.cpp
     src/core/SubtitleProcessor.h
     src/core/SubtitleProcessor.cpp
+    src/core/FeedbackStore.h
+    src/core/FeedbackStore.cpp
 )
 target_include_directories(censorcut_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src

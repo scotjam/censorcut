@@ -15,6 +15,7 @@ namespace censorcut {
 class AnalyzerPanel;
 class ExportQueue;
 class ExportQueuePanel;
+class FeedbackStore;
 class MarkerModel;
 class PlaybackController;
 class TimelineWidget;
@@ -63,6 +64,7 @@ private:
     std::unique_ptr<PlaybackController> m_playback;
     MarkerModel*  m_markers      = nullptr;
     ExportQueue*  m_exportQueue  = nullptr;
+    FeedbackStore* m_feedback    = nullptr;
 
     // UI
     VideoSurface*    m_video       = nullptr;

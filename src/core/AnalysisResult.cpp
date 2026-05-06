@@ -56,6 +56,22 @@ AnalysisResult parseAnalysisResultJson(const QByteArray& jsonBytes, QString* err
         }
     }
 
+    if (j.contains("frameEmbeddings") && j.at("frameEmbeddings").is_array()) {
+        for (const auto& fj : j.at("frameEmbeddings")) {
+            if (!fj.is_object()) continue;
+            FrameEmbedding fe;
+            fe.timeMs = fj.value("tMs", qint64{0});
+            if (fj.contains("vec") && fj.at("vec").is_array()) {
+                const auto& arr = fj.at("vec");
+                fe.vec.reserve(static_cast<int>(arr.size()));
+                for (const auto& v : arr) {
+                    fe.vec.append(v.is_number() ? float(v.get<double>()) : 0.0f);
+                }
+            }
+            if (!fe.vec.isEmpty()) result.frameEmbeddings.append(fe);
+        }
+    }
+
     if (j.contains("suggestions") && j.at("suggestions").is_array()) {
         for (const auto& sj : j.at("suggestions")) {
             if (!sj.is_object()) continue;

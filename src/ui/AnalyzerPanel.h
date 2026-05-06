@@ -17,6 +17,7 @@ class QSpinBox;
 namespace censorcut {
 
 class AnalysisController;
+class FeedbackStore;
 class MarkerModel;
 class PlaybackController;
 
@@ -30,6 +31,7 @@ class AnalyzerPanel : public QWidget {
 public:
     AnalyzerPanel(MarkerModel* markers,
                   PlaybackController* playback,
+                  FeedbackStore* feedback,
                   QWidget* parent = nullptr);
 
     /// Set the current source video and its known duration. Pass an empty
@@ -72,6 +74,7 @@ private:
 
     MarkerModel*        m_markers    = nullptr;
     PlaybackController* m_playback   = nullptr;
+    FeedbackStore*      m_feedback   = nullptr;
     AnalysisController* m_controller = nullptr;
 
     QString m_sourcePath;

@@ -275,6 +275,26 @@ def main(argv: Optional[List[str]] = None) -> int:
             "values": _round_floats(s.get("values", []), 3),
         }
 
+    # Pull the per-frame CLIP embeddings the vision detector stashed, and
+    # keep only those that fall inside an emitted suggestion range. Each
+    # entry: {tMs: int, vec: [floats]}.
+    suggestion_embeddings: List[dict] = []
+    if clip_used:
+        try:
+            from .detectors import vision_clip  # noqa: WPS433
+            cached = getattr(vision_clip.run, "last_image_embeddings", []) or []
+        except Exception:
+            cached = []
+        if cached:
+            ranges = [(s["startMs"], s["endMs"]) for s in all_suggestions]
+            for t_ms, vec in cached:
+                if vec is None:
+                    continue
+                for st, en in ranges:
+                    if st <= t_ms < en:
+                        suggestion_embeddings.append({"tMs": int(t_ms), "vec": vec})
+                        break
+
     result = {
         "schemaVersion": 1,
         "sourceFile":   str(Path(input_path).resolve()),
@@ -286,6 +306,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "categoryDiagnostics": diagnostics,
         "rawScores":    raw_scores_out,
         "suggestions":  all_suggestions,
+        "frameEmbeddings": suggestion_embeddings,
     }
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

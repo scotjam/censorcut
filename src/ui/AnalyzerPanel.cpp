@@ -1,6 +1,7 @@
 #include "AnalyzerPanel.h"
 
 #include "core/AnalysisController.h"
+#include "core/FeedbackStore.h"
 #include "core/Marker.h"
 #include "core/MarkerModel.h"
 #include "core/PlaybackController.h"
@@ -39,8 +40,10 @@ QString formatTimeShort(qint64 ms)
 
 AnalyzerPanel::AnalyzerPanel(MarkerModel* markers,
                              PlaybackController* playback,
+                             FeedbackStore* feedback,
                              QWidget* parent)
-    : QWidget(parent), m_markers(markers), m_playback(playback)
+    : QWidget(parent), m_markers(markers), m_playback(playback),
+      m_feedback(feedback)
 {
     auto* main = new QVBoxLayout(this);
     main->setContentsMargins(12, 12, 12, 12);
@@ -280,6 +283,8 @@ void AnalyzerPanel::onCompleted(const AnalysisResult& result)
 {
     setRunning(false);
 
+    if (m_feedback) m_feedback->setLatestEmbeddings(result.frameEmbeddings);
+
     int added = 0;
     if (m_markers) {
         for (const auto& s : result.suggestions) {
@@ -462,6 +467,14 @@ void AnalyzerPanel::setStatusAndAdvance(int newStatus)
         Marker copy = *m;
         copy.status = static_cast<Status>(newStatus);
         m_markers->updateMarkerById(m_reviewId, copy);
+        // Record the decision for the local feedback loop. Only Suggested
+        // markers contribute (manual markers don't have semantic embeddings).
+        if (m_feedback && m->source == Source::Suggested) {
+            const auto decision = (copy.status == Status::Confirmed)
+                ? FeedbackStore::Decision::Accepted
+                : FeedbackStore::Decision::Rejected;
+            m_feedback->recordDecision(copy, decision);
+        }
     }
     // Use the marker's startMs as the reference for "next" so we don't
     // re-pick the one we just acted on.

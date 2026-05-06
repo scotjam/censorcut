@@ -79,6 +79,8 @@ private:
     qint64  m_pendingCutStartMs = -1;  // -1 = no pending start
     bool    m_dirty = false;
     bool    m_previewMode = false;
+    bool    m_userScrubbing = false;
+    qint64  m_lastPlaybackPos = -1;  // for forward-crossing detection in preview
     /// J/K/L tracks the user's *intended* rate independently of libVLC,
     /// because libvlc_get_rate can return slightly different floats on
     /// readback (and 0 when paused). Reset to 1.0 by the '1' key.

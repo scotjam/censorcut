@@ -30,7 +30,9 @@ public:
     void resetZoom();
 
 signals:
-    void scrubbed(qint64 ms);  // user clicked or dragged on empty timeline
+    void scrubbed(qint64 ms);    // user clicked or dragged on empty timeline
+    void scrubBegan();           // mouse pressed on the scrubber strip
+    void scrubEnded();           // mouse released after a scrub
 
 protected:
     void paintEvent(QPaintEvent* event) override;

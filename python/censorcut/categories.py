@@ -176,13 +176,19 @@ def fused_to_suggestions(category: dict,
                          fuse_period_ms: int = DEFAULT_FUSE_PERIOD_MS,
                          duration_ms: int = 0) -> List[dict]:
     """Find contiguous runs above the category's threshold, pad before/after,
-    and emit one suggestion per run."""
+    and emit one suggestion per run.
+
+    A category may set ``maxDurationMs`` — if the un-padded run exceeds that,
+    it's dropped as a likely false positive (the detector is matching most
+    of the movie, which usually means the prompt or threshold is too loose
+    rather than there being a 90-minute violent scene)."""
     if not fused:
         return []
-    threshold   = float(category.get("threshold", 0.5))
-    pad_before  = int(category.get("padBeforeMs", 0)) // fuse_period_ms
-    pad_after   = int(category.get("padAfterMs", 0))  // fuse_period_ms
-    name        = category.get("name", "Unnamed")
+    threshold     = float(category.get("threshold", 0.5))
+    pad_before    = int(category.get("padBeforeMs", 0)) // fuse_period_ms
+    pad_after     = int(category.get("padAfterMs", 0))  // fuse_period_ms
+    max_dur_ms    = int(category.get("maxDurationMs", 0))
+    name          = category.get("name", "Unnamed")
 
     out: List[dict] = []
     n = len(fused)
@@ -194,6 +200,12 @@ def fused_to_suggestions(category: dict,
         j = i
         while j < n and fused[j] >= threshold:
             j += 1
+        run_dur_ms = (j - i) * fuse_period_ms
+        if max_dur_ms > 0 and run_dur_ms > max_dur_ms:
+            # Drop suspiciously long matches — almost always a calibration
+            # issue with the detector rather than real content.
+            i = j
+            continue
         peak = max(fused[i:j])
         start_idx = max(0, i - pad_before)
         end_idx   = min(n, j + pad_after)

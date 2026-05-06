@@ -34,23 +34,20 @@ class TestYamnetGraceful(unittest.TestCase):
         self.assertEqual(idx_for["Crying, sobbing"], 3)
 
     def test_run_raises_yamnet_unavailable_when_no_model(self):
-        # We don't ship the model; calling run should produce a clean
-        # YamnetUnavailable rather than a traceback.
+        # The point: a missing model OR an inaccessible input should produce
+        # a controlled failure, not an AttributeError / TypeError leaking
+        # from our code. The exact exception depends on which check trips
+        # first (no deps -> YamnetUnavailable; deps + model present but
+        # missing source file -> ffmpeg subprocess error).
+        import subprocess
         try:
             audio_label.run("/nonexistent.mp4", duration_ms=1000,
                             labels=["Screaming"])
-            # If something installed all the deps + model and this call
-            # actually started ffmpeg/inference, the file-not-found above
-            # would surface as a different error from inside ffmpeg. Either
-            # way we want a controlled failure, not a crash on undefined
-            # behaviour.
         except audio_label.YamnetUnavailable:
             return
         except Exception as e:
-            # Acceptable too — the failure mode depends on which dep is
-            # missing first. The important thing is no AttributeError or
-            # TypeError leaking from our code.
-            allowed = (FileNotFoundError, RuntimeError)
+            allowed = (FileNotFoundError, RuntimeError,
+                       subprocess.CalledProcessError)
             self.assertIsInstance(e, allowed,
                                   msg=f"unexpected exception class: {type(e).__name__}: {e}")
 

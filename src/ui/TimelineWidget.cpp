@@ -267,6 +267,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event)
         m_dragEdge = hit.edge;
         return;  // start an edge-drag; don't scrub
     }
+    emit scrubBegan();
     emit scrubbed(xToMs(event->pos().x()));
 }
 
@@ -303,8 +304,10 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
 void TimelineWidget::mouseReleaseEvent(QMouseEvent* event)
 {
     if (event->button() == Qt::LeftButton) {
+        const bool wasEdgeDrag = (m_dragEdge != Edge::None);
         m_dragEdge = Edge::None;
         m_dragId = QUuid();
+        if (!wasEdgeDrag) emit scrubEnded();
     }
 }
 

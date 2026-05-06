@@ -1,19 +1,20 @@
 {
   "schemaVersion": 1,
-  "comment": "Built-in categories. Each detector entry uses one of: 'audio.lufs.jump' (M3, direct series), 'audio.yamnet' with params.labels (M4 AudioSet display names), 'vision.clip' with params.prompts (M5 zero-shot text prompts), 'dialogue.whisper' with params.labels (M6 keyword/phrase substrings). Detectors gracefully no-op when their dependency or model is missing — categories that lose all their detectors simply produce no suggestions.",
+  "comment": "Built-in categories. Tuning notes: YAMNet scores aren't well-calibrated, so audio.yamnet weights are capped at 0.5 — they confirm a category rather than triggering it on their own. Vision.clip is better calibrated for content semantics and carries the higher weight where applicable. Thresholds are deliberately conservative; the analyzer should err on missing some scenes rather than flagging the entire movie. Tighten further by raising thresholds; loosen by lowering them or bumping audio weights.",
   "categories": [
     {
       "name": "Jump scare",
       "enabled": true,
-      "threshold": 0.5,
+      "threshold": 0.75,
       "padBeforeMs": 1000,
       "padAfterMs": 1500,
+      "maxDurationMs": 6000,
       "detectors": [
-        { "id": "audio.lufs.jump", "weight": 0.7 },
-        { "id": "audio.yamnet", "weight": 0.5,
-          "params": { "labels": ["Screaming", "Whimper", "Gasp",
-                                  "Crash", "Smash, crash", "Bang", "Boom"] } },
-        { "id": "vision.clip", "weight": 0.4,
+        { "id": "audio.lufs.jump", "weight": 0.4 },
+        { "id": "audio.yamnet", "weight": 0.3,
+          "params": { "labels": ["Screaming", "Gasp",
+                                  "Smash, crash", "Bang", "Boom"] } },
+        { "id": "vision.clip", "weight": 0.5,
           "params": { "prompts": ["a person screaming in fear",
                                    "a sudden frightening face close-up",
                                    "a monster jumping out at the camera"] } }
@@ -22,14 +23,13 @@
     {
       "name": "Screaming",
       "enabled": true,
-      "threshold": 0.5,
+      "threshold": 0.7,
       "padBeforeMs": 500,
       "padAfterMs": 800,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 1.0,
-          "params": { "labels": ["Screaming", "Whimper",
-                                  "Children shouting"] } },
-        { "id": "vision.clip", "weight": 0.4,
+        { "id": "audio.yamnet", "weight": 0.5,
+          "params": { "labels": ["Screaming"] } },
+        { "id": "vision.clip", "weight": 0.6,
           "params": { "prompts": ["a person screaming in terror",
                                    "a child crying and screaming"] } }
       ]
@@ -37,43 +37,43 @@
     {
       "name": "Crying / sad",
       "enabled": true,
-      "threshold": 0.5,
+      "threshold": 0.75,
       "padBeforeMs": 500,
       "padAfterMs": 800,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 1.0,
+        { "id": "audio.yamnet", "weight": 0.5,
           "params": { "labels": ["Crying, sobbing", "Baby cry, infant cry",
-                                  "Whimper", "Wail, moan"] } },
-        { "id": "vision.clip", "weight": 0.3,
-          "params": { "prompts": ["a person crying with tears",
-                                   "a sad face mourning"] } }
+                                  "Wail, moan"] } },
+        { "id": "vision.clip", "weight": 0.5,
+          "params": { "prompts": ["a person crying with tears on their face",
+                                   "a child sobbing"] } }
       ]
     },
     {
       "name": "Yelling",
       "enabled": true,
-      "threshold": 0.55,
+      "threshold": 0.7,
       "padBeforeMs": 400,
       "padAfterMs": 600,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 1.0,
-          "params": { "labels": ["Yell", "Shout", "Battle cry",
-                                  "Children shouting"] } },
-        { "id": "vision.clip", "weight": 0.3,
-          "params": { "prompts": ["an angry person yelling at someone"] } }
+        { "id": "audio.yamnet", "weight": 0.4,
+          "params": { "labels": ["Yell", "Shout", "Battle cry"] } },
+        { "id": "vision.clip", "weight": 0.5,
+          "params": { "prompts": ["an angry person yelling at someone",
+                                   "an aggressive face shouting"] } }
       ]
     },
     {
       "name": "Gunfire",
       "enabled": true,
-      "threshold": 0.45,
+      "threshold": 0.6,
       "padBeforeMs": 600,
       "padAfterMs": 800,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 1.0,
-          "params": { "labels": ["Gunshot, gunfire", "Machine gun", "Cap gun",
+        { "id": "audio.yamnet", "weight": 0.5,
+          "params": { "labels": ["Gunshot, gunfire", "Machine gun",
                                   "Artillery fire", "Fusillade", "Cannon"] } },
-        { "id": "vision.clip", "weight": 0.5,
+        { "id": "vision.clip", "weight": 0.6,
           "params": { "prompts": ["a person aiming a gun at someone",
                                    "a person firing a handgun",
                                    "a soldier shooting a rifle"] } }
@@ -82,28 +82,27 @@
     {
       "name": "Hitting / impacts",
       "enabled": true,
-      "threshold": 0.5,
+      "threshold": 0.7,
       "padBeforeMs": 400,
       "padAfterMs": 600,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 1.0,
-          "params": { "labels": ["Slap, smack", "Thump, thud", "Smash, crash",
-                                  "Crack", "Glass", "Breaking"] } },
-        { "id": "vision.clip", "weight": 0.4,
-          "params": { "prompts": ["a person punching another person",
-                                   "a person being slapped or hit"] } }
+        { "id": "audio.yamnet", "weight": 0.4,
+          "params": { "labels": ["Slap, smack", "Smash, crash",
+                                  "Glass", "Breaking"] } },
+        { "id": "vision.clip", "weight": 0.6,
+          "params": { "prompts": ["a person punching another person in the face",
+                                   "a person being hit hard"] } }
       ]
     },
     {
       "name": "Sword fight",
       "enabled": true,
-      "threshold": 0.55,
+      "threshold": 0.7,
       "padBeforeMs": 600,
       "padAfterMs": 800,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 0.7,
-          "params": { "labels": ["Whoosh, swoosh, swish", "Clang", "Yell",
-                                  "Shout"] } },
+        { "id": "audio.yamnet", "weight": 0.3,
+          "params": { "labels": ["Whoosh, swoosh, swish", "Clang"] } },
         { "id": "vision.clip", "weight": 0.7,
           "params": { "prompts": ["two people sword fighting with blades",
                                    "people dueling with swords",
@@ -113,78 +112,77 @@
     {
       "name": "Chase",
       "enabled": true,
-      "threshold": 0.55,
+      "threshold": 0.7,
       "padBeforeMs": 800,
       "padAfterMs": 800,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 0.5,
-          "params": { "labels": ["Run", "Footsteps", "Heavy breathing",
-                                  "Vehicle", "Race car, auto racing"] } },
+        { "id": "audio.yamnet", "weight": 0.3,
+          "params": { "labels": ["Heavy breathing",
+                                  "Race car, auto racing"] } },
         { "id": "vision.clip", "weight": 0.7,
-          "params": { "prompts": ["a person running away in panic",
+          "params": { "prompts": ["a person running away in panic with someone chasing",
                                    "a high-speed car chase",
-                                   "someone chasing another person"] } }
+                                   "someone being pursued through a chase scene"] } }
       ]
     },
     {
       "name": "Violence (general)",
       "enabled": true,
-      "threshold": 0.55,
+      "threshold": 0.7,
       "padBeforeMs": 600,
       "padAfterMs": 800,
       "detectors": [
-        { "id": "audio.yamnet", "weight": 0.5,
-          "params": { "labels": ["Slap, smack", "Thump, thud", "Smash, crash",
-                                  "Screaming", "Yell"] } },
+        { "id": "audio.yamnet", "weight": 0.3,
+          "params": { "labels": ["Slap, smack", "Smash, crash"] } },
         { "id": "vision.clip", "weight": 0.8,
           "params": { "prompts": ["a violent fight between two people",
-                                   "blood on a person's face",
-                                   "a brutal beating",
-                                   "a serious injury with blood"] } }
+                                   "blood on a person's face from injury",
+                                   "a brutal beating with someone bleeding"] } }
       ]
     },
     {
       "name": "Cruelty",
       "enabled": true,
-      "threshold": 0.55,
+      "threshold": 0.8,
       "padBeforeMs": 1000,
       "padAfterMs": 1000,
+      "maxDurationMs": 20000,
       "detectors": [
         { "id": "vision.clip", "weight": 1.0,
-          "params": { "prompts": ["a person being cruel to a child",
-                                   "an animal being mistreated or harmed",
-                                   "a helpless person being threatened",
-                                   "a bully tormenting someone smaller"] } }
+          "params": { "prompts": ["an adult physically attacking a child",
+                                   "a person striking an animal in anger",
+                                   "a victim being beaten or tortured"] } }
       ]
     },
     {
       "name": "Pushing",
       "enabled": true,
-      "threshold": 0.55,
+      "threshold": 0.8,
       "padBeforeMs": 400,
       "padAfterMs": 600,
+      "maxDurationMs": 8000,
       "detectors": [
         { "id": "vision.clip", "weight": 1.0,
-          "params": { "prompts": ["one person shoving another roughly",
-                                   "a child being pushed to the ground"] } }
+          "params": { "prompts": ["one person violently shoving another to the ground",
+                                   "a person knocked down by a hard shove"] } }
       ]
     },
     {
       "name": "Kill / threat",
       "enabled": true,
-      "threshold": 0.55,
+      "threshold": 0.65,
       "padBeforeMs": 800,
       "padAfterMs": 1000,
       "detectors": [
         { "id": "vision.clip", "weight": 0.6,
           "params": { "prompts": ["a knife held to someone's throat",
-                                   "a gun pointed at a person's head",
-                                   "a menacing villain threatening a victim"] } },
-        { "id": "dialogue.whisper", "weight": 0.7,
+                                   "a gun pointed at a person's head at close range",
+                                   "a menacing villain threatening a victim with a weapon"] } },
+        { "id": "dialogue.whisper", "weight": 0.8,
           "params": { "labels": ["i'll kill you", "kill you", "going to die",
-                                  "going to kill", "you're dead", "die",
-                                  "murder", "hunt you down", "shoot you",
-                                  "stab you", "no mercy"] } }
+                                  "going to kill", "you're dead", "murder",
+                                  "hunt you down", "shoot you", "stab you",
+                                  "no mercy"] } }
       ]
     }
   ]

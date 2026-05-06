@@ -203,6 +203,10 @@ void MainWindow::connectSignals()
 
     connect(m_timeline, &TimelineWidget::scrubbed,
             m_playback.get(), &PlaybackController::seek);
+    connect(m_timeline, &TimelineWidget::scrubBegan,
+            this, [this]{ m_userScrubbing = true; });
+    connect(m_timeline, &TimelineWidget::scrubEnded,
+            this, [this]{ m_userScrubbing = false; });
 
     connect(m_markerList, &QListView::doubleClicked, this,
             [this](const QModelIndex& ix) {
@@ -509,16 +513,28 @@ void MainWindow::onPositionChanged(qint64 ms)
     m_timeLabel->setText(QStringLiteral("%1 / %2")
                              .arg(formatTime(ms), formatTime(m_playback->duration())));
 
-    // Preview mode: if the playhead is inside a confirmed cut, jump to the
-    // far end of the merged cut block so the user hears/sees the result of
-    // the export without committing to it. Adjacent cuts get walked one at
-    // a time on subsequent positionChanged ticks — that's fine; the visual
-    // effect is the same as a single longer cut.
+    // Preview mode: when normal forward playback CROSSES INTO a confirmed
+    // cut, jump past it so the user hears/sees the result of the export.
+    //
+    // Three guards keep this from fighting the user when they're navigating
+    // by hand:
+    //   1. Suppress while m_userScrubbing — dragging the scrubber overrides
+    //      preview, otherwise the playhead bounces back as you drag.
+    //   2. Only on FORWARD motion (ms > prev) — backward seeks (right-click
+    //      "Play this marker", marker-list double-click on an earlier
+    //      marker) override preview.
+    //   3. Only on FRESH crossings (prev was outside the cut) — once you're
+    //      already inside, we let you keep playing. Combined with (2), this
+    //      means landing inside a cut via manual seek is fine.
+    const qint64 prev = m_lastPlaybackPos;
+    m_lastPlaybackPos = ms;
     if (!m_previewMode) return;
+    if (m_userScrubbing) return;
+    if (prev < 0 || ms <= prev) return;
     qint64 jumpTo = -1;
     for (const auto& m : m_markers->markers()) {
         if (m.status != Status::Confirmed || !m.isValid()) continue;
-        if (ms >= m.startMs && ms < m.endMs) {
+        if (ms >= m.startMs && ms < m.endMs && prev < m.startMs) {
             jumpTo = std::max(jumpTo, m.endMs);
         }
     }

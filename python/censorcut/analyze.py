@@ -164,19 +164,30 @@ def main(argv: Optional[List[str]] = None) -> int:
             t = float(cat.get("threshold", 0.5)) * threshold_mul
             cat["threshold"] = max(0.0, min(1.0, t))
 
-    # 1) Loudness pass — always.
-    emit_progress(0.05, "loudness")
-    try:
-        loud = audio_loudness.run(input_path, duration_ms, progress=emit_progress)
-    except FileNotFoundError as e:
-        print(f"censorcut.analyze: ffmpeg not found ({e}). Install ffmpeg.",
-              file=sys.stderr)
-        return 3
-    except Exception as e:
-        print(f"censorcut.analyze: loudness pass failed: {e}", file=sys.stderr)
-        return 5
-
-    series_by_key: Dict[str, Series] = dict(loud)
+    # 1) Loudness pass — only if some enabled category references one of
+    #    the audio.lufs.* series. Saves ~30 s of ffmpeg ebur128 work when
+    #    we're running a vision-only category set.
+    needs_loudness = any(
+        det.get("id", "").startswith("audio.lufs")
+        for cat in categories if cat.get("enabled", True)
+        for det in cat.get("detectors", []))
+    series_by_key: Dict[str, Series] = {}
+    if needs_loudness:
+        emit_progress(0.05, "loudness")
+        try:
+            loud = audio_loudness.run(input_path, duration_ms,
+                                      progress=emit_progress)
+        except FileNotFoundError as e:
+            print(f"censorcut.analyze: ffmpeg not found ({e}). Install ffmpeg.",
+                  file=sys.stderr)
+            return 3
+        except Exception as e:
+            print(f"censorcut.analyze: loudness pass failed: {e}", file=sys.stderr)
+            return 5
+        series_by_key.update(loud)
+    else:
+        print("censorcut.analyze: no category uses audio.lufs.* — "
+              "skipping loudness pass.", file=sys.stderr)
 
     # 2) YAMNet pass — if available.
     yamnet_labels = cat_mod.required_labels(categories, detector_id="audio.yamnet")

@@ -57,6 +57,18 @@ if exist "%REPO%\sync\Cargo.toml" (
     popd
 )
 
+if exist "%REPO%\edits\Cargo.toml" (
+    echo === Rust edits tests ===
+    set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+    pushd "%REPO%\edits"
+    cargo test
+    if errorlevel 1 (
+        popd
+        goto :err
+    )
+    popd
+)
+
 :done
 echo === All builds and tests passed ===
 endlocal & exit /b 0

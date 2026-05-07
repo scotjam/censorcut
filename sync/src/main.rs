@@ -21,6 +21,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod crypto;
+mod endorse;
 mod network;
 mod schema;
 mod sink;

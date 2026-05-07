@@ -84,6 +84,10 @@ add_library(censorcut_core STATIC
     src/core/FingerprintMatcher.cpp
     src/core/EditsClient.h
     src/core/EditsClient.cpp
+    src/core/SyncProcess.h
+    src/core/SyncProcess.cpp
+    src/core/TrustLedger.h
+    src/core/TrustLedger.cpp
 )
 target_include_directories(censorcut_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -116,6 +120,10 @@ qt_add_executable(censorcut
     src/ui/AnalyzerPanel.cpp
     src/ui/EditsPullDialog.h
     src/ui/EditsPullDialog.cpp
+    src/ui/SharingDialog.h
+    src/ui/SharingDialog.cpp
+    src/ui/ProposedCategoriesDialog.h
+    src/ui/ProposedCategoriesDialog.cpp
 )
 target_link_libraries(censorcut PRIVATE
     censorcut_core
@@ -150,5 +158,9 @@ if(CENSORCUT_BUILD_TESTS)
         qt_add_executable(test_fingerprint_matcher tests/test_fingerprint_matcher.cpp)
         target_link_libraries(test_fingerprint_matcher PRIVATE censorcut_core Qt6::Test)
         add_test(NAME fingerprint_matcher COMMAND test_fingerprint_matcher)
+
+        qt_add_executable(test_trust_ledger tests/test_trust_ledger.cpp)
+        target_link_libraries(test_trust_ledger PRIVATE censorcut_core Qt6::Test)
+        add_test(NAME trust_ledger COMMAND test_trust_ledger)
     endif()
 endif()

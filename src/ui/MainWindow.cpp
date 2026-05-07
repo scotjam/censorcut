@@ -4,6 +4,8 @@
 #include "EditsPullDialog.h"
 #include "ExportDialog.h"
 #include "ExportQueuePanel.h"
+#include "ProposedCategoriesDialog.h"
+#include "SharingDialog.h"
 #include "TimelineWidget.h"
 #include "VideoSurface.h"
 #include "core/EditsClient.h"
@@ -12,6 +14,7 @@
 #include "core/MarkerModel.h"
 #include "core/PlaybackController.h"
 #include "core/Project.h"
+#include "core/SyncProcess.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -80,6 +83,8 @@ MainWindow::MainWindow(QWidget* parent)
     // bumped). Deferred to a single-shot so the main window has actually
     // started its event loop — modal dialogs need that to behave correctly.
     QMetaObject::invokeMethod(this, &MainWindow::maybeShowDisclaimer,
+                              Qt::QueuedConnection);
+    QMetaObject::invokeMethod(this, &MainWindow::applySharingState,
                               Qt::QueuedConnection);
 }
 
@@ -192,6 +197,11 @@ void MainWindow::buildMenus()
         QStringLiteral("&Pull Edits from Server..."));
     pullEdits->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E));
     connect(pullEdits, &QAction::triggered, this, &MainWindow::onPullEditsFromServer);
+    toolsMenu->addSeparator();
+    auto* sharing = toolsMenu->addAction(QStringLiteral("&Sharing settings..."));
+    connect(sharing, &QAction::triggered, this, &MainWindow::onSharingSettings);
+    auto* proposed = toolsMenu->addAction(QStringLiteral("Review proposed &categories..."));
+    connect(proposed, &QAction::triggered, this, &MainWindow::onReviewProposedCategories);
 
     auto* editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
     auto* markStart = editMenu->addAction(QStringLiteral("Mark cut &start"));
@@ -497,6 +507,43 @@ void MainWindow::onExportProject()
     m_exportQueue->enqueue(p, dlg.outputPath(), dlg.quality());
 }
 
+void MainWindow::onSharingSettings()
+{
+    SharingDialog dlg(this);
+    connect(&dlg, &SharingDialog::feedbackSharingChanged,
+            this, &MainWindow::onFeedbackSharingChanged);
+    dlg.exec();
+}
+
+void MainWindow::onReviewProposedCategories()
+{
+    ProposedCategoriesDialog dlg(this);
+    dlg.exec();
+}
+
+void MainWindow::onFeedbackSharingChanged(bool on)
+{
+    Q_UNUSED(on);
+    applySharingState();
+}
+
+void MainWindow::applySharingState()
+{
+    const bool wantRunning = SharingDialog::feedbackSharingEnabled();
+    if (!m_sync) {
+        m_sync = new SyncProcess(this);
+        connect(m_sync, &SyncProcess::failed, this, [this](const QString& reason) {
+            statusBar()->showMessage(reason, 8000);
+            qWarning().noquote() << "sync:" << reason;
+        });
+    }
+    if (wantRunning && !m_sync->isRunning()) {
+        m_sync->start();
+    } else if (!wantRunning && m_sync->isRunning()) {
+        m_sync->stop();
+    }
+}
+
 void MainWindow::onSetEditsServerUrl()
 {
     const QString current = EditsClient::configuredServerUrl();
@@ -657,7 +704,7 @@ void MainWindow::onTimelineScrubbed(qint64 ms)
 
 void MainWindow::maybeShowDisclaimer()
 {
-    static const QString kCurrentVersion = QStringLiteral("2");
+    static const QString kCurrentVersion = QStringLiteral("3");
     QSettings settings;
     if (settings.value(QStringLiteral("disclaimer/acceptedVersion")).toString()
         == kCurrentVersion) {
@@ -686,6 +733,20 @@ void MainWindow::maybeShowDisclaimer()
         "down-weight scenes similar to ones you've rejected and prefer "
         "scenes similar to ones you've accepted. Use <i>File → Forget "
         "Suggestion Feedback…</i> to wipe the file.<br><br>"
+        "<b>Peer-to-peer sharing (default ON, opt-out).</b> "
+        "On a separate background process, this installation connects "
+        "to a small peer-to-peer gossip network and shares your "
+        "accept/reject decisions with other users so the recommender "
+        "improves over time — your installation receives definitions "
+        "that provide automatic editor improvements based on other "
+        "users' feedback. The data shared is the analyzer's semantic "
+        "vector for the scene, the category, and your accept/reject "
+        "choice. Film titles and file paths are not shared. CensorCut "
+        "itself does not log IP addresses. Sharing is two-directional: "
+        "turning it off in <i>Tools → Sharing settings…</i> also stops "
+        "your installation from receiving improvements from peers.<br><br>"
+        "Edit packs and category-definition sharing are <b>opt-in</b> "
+        "and configured separately under Tools.<br><br>"
         "The software is provided <b>as is</b>, with no warranty. "
         "No responsibility can be taken for any data loss."));
     box.setStandardButtons(QMessageBox::Ok | QMessageBox::Close);
@@ -696,6 +757,7 @@ void MainWindow::maybeShowDisclaimer()
     if (box.exec() == QMessageBox::Ok) {
         settings.setValue(QStringLiteral("disclaimer/acceptedVersion"),
                           kCurrentVersion);
+        applySharingState();
     } else {
         // User declined — close the window. Closing the only window quits
         // the app once the event loop returns to its natural exit.

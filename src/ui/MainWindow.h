@@ -18,6 +18,7 @@ class ExportQueuePanel;
 class FeedbackStore;
 class MarkerModel;
 class PlaybackController;
+class SyncProcess;
 class TimelineWidget;
 class VideoSurface;
 
@@ -38,6 +39,9 @@ private slots:
     void onForgetFeedback();
     void onSetEditsServerUrl();
     void onPullEditsFromServer();
+    void onSharingSettings();
+    void onReviewProposedCategories();
+    void onFeedbackSharingChanged(bool on);
     void onMarkStart();
     void onMarkEnd();
     void onPositionChanged(qint64 ms);
@@ -55,6 +59,7 @@ private:
     /// show the disclaimer modally. Acceptance is saved in QSettings;
     /// "Quit" exits the application before the user can do anything.
     void maybeShowDisclaimer();
+    void applySharingState();
     QString currentMoviePath() const { return m_currentMoviePath; }
     void    updateStatusBar();
 
@@ -68,6 +73,7 @@ private:
     MarkerModel*  m_markers      = nullptr;
     ExportQueue*  m_exportQueue  = nullptr;
     FeedbackStore* m_feedback    = nullptr;
+    SyncProcess*   m_sync        = nullptr;
 
     // UI
     VideoSurface*    m_video       = nullptr;

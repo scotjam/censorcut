@@ -102,47 +102,146 @@ def _feedback_file_path() -> Path:
     return Path(home) / ".censorcut" / "feedback.jsonl"
 
 
-def _load_feedback_vectors(torch, np):
-    """Load past accept/reject embeddings as a dict of stacked tensors.
-    Returns ({"reject": tensor[N1, D], "accept": tensor[N2, D]}, count)
-    on the same device CLIP is using (caller passes them through).
-    Empty dict if no feedback file."""
-    import json
-    path = _feedback_file_path()
+def _peers_file_path() -> Path:
+    """Where censorcut-sync deposits accepted peer rows."""
+    home = os.path.expanduser("~")
+    return Path(home) / ".censorcut" / "peers.jsonl"
+
+
+def _trust_file_path() -> Path:
+    """C++ TrustLedger writes here — pubkey -> direct trust score."""
+    home = os.path.expanduser("~")
+    return Path(home) / ".censorcut" / "trust.json"
+
+
+# Floor weight applied to peer rows whose author has no direct trust
+# yet (matches TrustLedger's transitive-bootstrap default for an
+# unseen author when no chain reaches them). Below this we drop the
+# row entirely — keeps a Sybil flood of fresh keys from inflating
+# storage during k-NN.
+_PEER_DROP_BELOW_WEIGHT = 0.05
+
+
+def _load_trust_scores() -> Dict[str, float]:
+    """Read ~/.censorcut/trust.json into pubkey -> score (only for keys
+    with interactions > 0). Empty if no file or malformed."""
+    import json as _json
+    path = _trust_file_path()
     if not path.exists():
-        return {"reject": None, "accept": None}, 0
-    by_decision: Dict[str, List[List[float]]] = {"reject": [], "accept": []}
+        return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except Exception:
-                    continue
-                vec = row.get("vec")
-                dec = row.get("decision")
-                if not vec or dec not in ("accept", "reject"):
-                    continue
-                by_decision[dec].append(vec)
-    except OSError:
-        return {"reject": None, "accept": None}, 0
+            j = _json.load(f)
+    except Exception:
+        return {}
+    out: Dict[str, float] = {}
+    for k, v in (j.get("direct") or {}).items():
+        n = int(v.get("n", 0))
+        if n <= 0:
+            continue
+        out[str(k)] = float(v.get("score", 0.1))
+    return out
 
-    out: Dict[str, object] = {}
+
+def _load_feedback_vectors(torch, np):
+    """Load past accept/reject embeddings into stacked tensors.
+
+    Two sources are merged:
+      1. ~/.censorcut/feedback.jsonl  — your own decisions, weight 1.0
+      2. ~/.censorcut/peers.jsonl     — peer-derived rows, weight =
+         trust(peer_key); rows below _PEER_DROP_BELOW_WEIGHT are
+         dropped.
+
+    Returns (state, total_rows) where state is a dict with keys:
+      reject, accept                 — tensor[N, D] of unit-norm vectors
+      reject_w, accept_w             — tensor[N] of per-row trust weights
+      reject_authors, accept_authors — list[str] of length N (authors
+                                        for peer rows, "" for local rows)
+    """
+    import json as _json
+
+    by_decision: Dict[str, List[List[float]]] = {"reject": [], "accept": []}
+    by_decision_w: Dict[str, List[float]]      = {"reject": [], "accept": []}
+    by_decision_authors: Dict[str, List[str]]  = {"reject": [], "accept": []}
+
+    # 1) local feedback — full weight, no author attribution.
+    path = _feedback_file_path()
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = _json.loads(line)
+                    except Exception:
+                        continue
+                    vec = row.get("vec")
+                    dec = row.get("decision")
+                    if not vec or dec not in ("accept", "reject"):
+                        continue
+                    by_decision[dec].append(vec)
+                    by_decision_w[dec].append(1.0)
+                    by_decision_authors[dec].append("")
+        except OSError:
+            pass
+
+    # 2) peer rows — trust-weighted; drop below floor.
+    trust = _load_trust_scores()
+    peers = _peers_file_path()
+    peer_kept = 0
+    peer_dropped = 0
+    if peers.exists():
+        try:
+            with open(peers, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = _json.loads(line)
+                    except Exception:
+                        continue
+                    vec = row.get("vec")
+                    dec = row.get("decision")
+                    pk  = row.get("peer_key") or row.get("author_pubkey")
+                    if not vec or dec not in ("accept", "reject") or not pk:
+                        continue
+                    weight = trust.get(pk, 0.1)  # 0.1 = TrustLedger floor
+                    if weight < _PEER_DROP_BELOW_WEIGHT:
+                        peer_dropped += 1
+                        continue
+                    by_decision[dec].append(vec)
+                    by_decision_w[dec].append(float(weight))
+                    by_decision_authors[dec].append(str(pk))
+                    peer_kept += 1
+        except OSError:
+            pass
+
+    if peer_kept or peer_dropped:
+        import sys as _sys
+        print(f"censorcut.vision_clip: peer rows kept={peer_kept} "
+              f"dropped={peer_dropped} (below {_PEER_DROP_BELOW_WEIGHT} weight)",
+              file=_sys.stderr)
+
+    out: Dict[str, object] = {
+        "reject": None, "accept": None,
+        "reject_w": None, "accept_w": None,
+        "reject_authors": [], "accept_authors": [],
+    }
     total = 0
     for k in ("reject", "accept"):
         rows = by_decision[k]
         if not rows:
-            out[k] = None
             continue
         arr = np.asarray(rows, dtype=np.float32)
-        # Re-normalize to be safe — older entries may differ slightly.
         norms = np.linalg.norm(arr, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         arr = arr / norms
         out[k] = torch.from_numpy(arr)
+        out[f"{k}_w"] = torch.tensor(by_decision_w[k], dtype=torch.float32)
+        out[f"{k}_authors"] = list(by_decision_authors[k])
         total += arr.shape[0]
     return out, total
 
@@ -243,6 +342,7 @@ def run(input_path: str,
     the semantic vector that produced each suggestion. Embeddings are NOT
     written into the per-prompt series (those stay numeric scores)."""
     run.last_image_embeddings = []  # type: ignore[attr-defined]
+    run.last_frame_contributors = []  # type: ignore[attr-defined]
 
     if not prompts:
         return {}
@@ -293,7 +393,8 @@ def run(input_path: str,
             _flush_batch(torch, model, batch_imgs, batch_times_ms,
                          text_feats, prompts, series,
                          run.last_image_embeddings,  # type: ignore[attr-defined]
-                         feedback, device)
+                         feedback, device,
+                         contributors_out=run.last_frame_contributors)  # type: ignore[attr-defined]
             batch_imgs = []
             batch_times_ms = []
             if progress:
@@ -316,7 +417,8 @@ def run(input_path: str,
 
 
 def _flush_batch(torch, model, batch_imgs, batch_times_ms, text_feats,
-                 prompts, series, embeddings_out, feedback, device):
+                 prompts, series, embeddings_out, feedback, device,
+                 contributors_out=None):
     """Encode a batch of images, append rescaled-similarity scores, and
     stash the L2-normalized image embeddings (one per frame) so the
     feedback loop can compare them later.
@@ -324,7 +426,16 @@ def _flush_batch(torch, model, batch_imgs, batch_times_ms, text_feats,
     Raw cosine similarity for normalized CLIP features lives roughly in
     [0.10, 0.40] — non-matches cluster around 0.15-0.20, strong matches
     reach 0.30-0.40. We map [0.15, 0.35] linearly onto [0, 1] (clamped),
-    so a non-match is near 0 and a clear match is above 0.7."""
+    so a non-match is near 0 and a clear match is above 0.7.
+
+    Per-frame contributing authors: when contributors_out is provided,
+    each emitted (t_ms, [author, ...]) entry lists the peer authors
+    whose accept-decision rows were within FEEDBACK_NEAR_THRESHOLD of
+    the frame. Local-feedback rows (author "") are skipped since
+    there's nothing to attribute. We only attribute on the boost
+    (accept) side because that's what causes a marker to be emitted —
+    reject rows suppress markers, so they're not the cause of any
+    marker that does survive."""
     with torch.no_grad():
         imgs = torch.stack(batch_imgs).to(device)
         img_feats = model.encode_image(imgs)
@@ -333,26 +444,73 @@ def _flush_batch(torch, model, batch_imgs, batch_times_ms, text_feats,
         sims = torch.clamp((raw - 0.15) / 0.20, 0.0, 1.0)
 
         # Per-frame multiplicative scale from feedback. Default 1.0; reject
-        # neighbours bring it down, accept neighbours bring it up. Single
-        # max-cosine match is enough — feedback is sparse, we don't need
-        # nearest-K.
+        # neighbours bring it down, accept neighbours bring it up. The
+        # per-row weight (1.0 for local, trust score for peers) modulates
+        # the strength of each effect: a low-trust peer's nudge towards
+        # 0.5× becomes a much smaller nudge.
         scale = torch.ones(sims.shape[0], 1, device=device)
+
+        def _apply_weighted(side_vecs, side_weights, neutral_factor, target_factor):
+            """side_vecs: tensor[N, D] of feedback vectors, unit-norm.
+               side_weights: tensor[N] of per-row trust weights in [0, 2].
+               When the max-cosine row crosses FEEDBACK_NEAR_THRESHOLD,
+               apply a per-frame factor that interpolates from neutral
+               (1.0) toward target by (weight) — clamped to weight in
+               [0, 1] so a single peer can't move the score more than a
+               full local row would. Returns the per-frame factor and
+               the index of the contributing row (-1 if none)."""
+            sims_to = img_feats @ side_vecs.T  # [B, N]
+            best_sim, best_idx = sims_to.max(dim=1)
+            triggered = (best_sim >= FEEDBACK_NEAR_THRESHOLD)
+            # Per-row weight at the best column for each frame.
+            chosen_w = side_weights[best_idx]  # [B]
+            chosen_w = torch.clamp(chosen_w, 0.0, 1.0)
+            factor = torch.where(
+                triggered,
+                neutral_factor + chosen_w * (target_factor - neutral_factor),
+                torch.full_like(chosen_w, neutral_factor))
+            return factor.unsqueeze(1), best_idx, triggered
+
+        accept_idx = None
+        accept_trig = None
         if feedback.get("reject") is not None:
-            sim_to_reject = (img_feats @ feedback["reject"].T).max(dim=1).values
-            scale = torch.where(
-                sim_to_reject.unsqueeze(1) >= FEEDBACK_NEAR_THRESHOLD,
-                scale * FEEDBACK_REJECT_PENALTY, scale)
+            r_vecs = feedback["reject"]
+            r_w    = feedback.get("reject_w")
+            if r_w is None:
+                r_w = torch.ones(r_vecs.shape[0], dtype=torch.float32)
+            r_w = r_w.to(device)
+            factor, _idx, _trig = _apply_weighted(
+                r_vecs, r_w, 1.0, FEEDBACK_REJECT_PENALTY)
+            scale = scale * factor
         if feedback.get("accept") is not None:
-            sim_to_accept = (img_feats @ feedback["accept"].T).max(dim=1).values
-            scale = torch.where(
-                sim_to_accept.unsqueeze(1) >= FEEDBACK_NEAR_THRESHOLD,
-                scale * FEEDBACK_ACCEPT_BOOST, scale)
+            a_vecs = feedback["accept"]
+            a_w    = feedback.get("accept_w")
+            if a_w is None:
+                a_w = torch.ones(a_vecs.shape[0], dtype=torch.float32)
+            a_w = a_w.to(device)
+            factor, accept_idx, accept_trig = _apply_weighted(
+                a_vecs, a_w, 1.0, FEEDBACK_ACCEPT_BOOST)
+            scale = scale * factor
+
         sims = torch.clamp(sims * scale, 0.0, 1.0)
 
         sims_np = sims.cpu().numpy()
         embeds = img_feats.cpu().numpy()
+        accept_idx_cpu = accept_idx.cpu().numpy() if accept_idx is not None else None
+        accept_trig_cpu = accept_trig.cpu().numpy() if accept_trig is not None else None
+
+    accept_authors_list = feedback.get("accept_authors") or []
     for k, row in enumerate(sims_np):
         for i, p in enumerate(prompts):
             series[p].append(float(row[i]))
         embeddings_out.append((batch_times_ms[k],
                                [round(float(x), 5) for x in embeds[k].tolist()]))
+        if contributors_out is not None:
+            authors_for_frame = []
+            if accept_trig_cpu is not None and bool(accept_trig_cpu[k]):
+                idx = int(accept_idx_cpu[k]) if accept_idx_cpu is not None else -1
+                if 0 <= idx < len(accept_authors_list):
+                    a = accept_authors_list[idx]
+                    if a:  # skip local rows (empty author)
+                        authors_for_frame.append(a)
+            contributors_out.append((batch_times_ms[k], authors_for_frame))

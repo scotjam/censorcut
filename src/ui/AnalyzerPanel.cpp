@@ -5,6 +5,7 @@
 #include "core/Marker.h"
 #include "core/MarkerModel.h"
 #include "core/PlaybackController.h"
+#include "core/TrustLedger.h"
 
 #include <QFormLayout>
 #include <QFrame>
@@ -37,6 +38,11 @@ QString formatTimeShort(qint64 ms)
 }
 
 } // namespace
+
+void AnalyzerPanel::setTrustLedger(TrustLedger* ledger)
+{
+    m_trust = ledger;
+}
 
 AnalyzerPanel::AnalyzerPanel(MarkerModel* markers,
                              PlaybackController* playback,
@@ -297,6 +303,7 @@ void AnalyzerPanel::onCompleted(const AnalysisResult& result)
             m.source     = Source::Suggested;
             m.confidence = s.score;
             m.status     = Status::Pending;
+            m.contributingAuthors = s.contributingAuthors;
             m_markers->addMarker(m);
             ++added;
         }
@@ -475,6 +482,13 @@ void AnalyzerPanel::setStatusAndAdvance(int newStatus)
                 ? FeedbackStore::Decision::Accepted
                 : FeedbackStore::Decision::Rejected;
             m_feedback->recordDecision(copy, decision);
+        }
+        if (m_trust && m->source == Source::Suggested) {
+            for (const QString& a : m->contributingAuthors) {
+                if (a.isEmpty()) continue;
+                if (copy.status == Status::Confirmed) m_trust->rewardAuthor(a);
+                else if (copy.status == Status::Rejected) m_trust->penalizeAuthor(a);
+            }
         }
     }
     // Use the marker's startMs as the reference for "next" so we don't

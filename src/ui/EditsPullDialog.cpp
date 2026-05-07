@@ -163,6 +163,8 @@ void EditsPullDialog::onApplyClicked()
                          .arg(QString::number(fit.scale, 'f', 3));
         }
         m.note = notes.join(QStringLiteral(" · "));
+        if (!row.pack.authorPubkey.isEmpty())
+            m.contributingAuthors.append(row.pack.authorPubkey);
         m_markers->addMarker(m);
         ++added;
     }

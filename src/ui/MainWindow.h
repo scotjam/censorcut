@@ -19,6 +19,7 @@ class FeedbackStore;
 class MarkerModel;
 class PlaybackController;
 class SyncProcess;
+class TrustLedger;
 class TimelineWidget;
 class VideoSurface;
 
@@ -74,6 +75,7 @@ private:
     ExportQueue*  m_exportQueue  = nullptr;
     FeedbackStore* m_feedback    = nullptr;
     SyncProcess*   m_sync        = nullptr;
+    TrustLedger*   m_trust       = nullptr;
 
     // UI
     VideoSurface*    m_video       = nullptr;

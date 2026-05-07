@@ -50,6 +50,11 @@ void to_json(nlohmann::json& j, const Marker& m)
         {"confidence", m.confidence},
         {"status",     statusToString(m.status).toStdString()},
     };
+    if (!m.contributingAuthors.isEmpty()) {
+        nlohmann::json arr = nlohmann::json::array();
+        for (const QString& a : m.contributingAuthors) arr.push_back(a.toStdString());
+        j["contributingAuthors"] = arr;
+    }
 }
 
 void from_json(const nlohmann::json& j, Marker& m)
@@ -69,6 +74,14 @@ void from_json(const nlohmann::json& j, Marker& m)
     m.confidence = j.value("confidence", 1.0);
     m.status     = statusFromString(QString::fromStdString(
                        j.value("status", std::string{"confirmed"})));
+    m.contributingAuthors.clear();
+    if (j.contains("contributingAuthors") && j["contributingAuthors"].is_array()) {
+        for (const auto& a : j["contributingAuthors"]) {
+            if (a.is_string()) {
+                m.contributingAuthors.append(QString::fromStdString(a.get<std::string>()));
+            }
+        }
+    }
 }
 
 } // namespace censorcut

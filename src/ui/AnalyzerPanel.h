@@ -20,6 +20,7 @@ class AnalysisController;
 class FeedbackStore;
 class MarkerModel;
 class PlaybackController;
+class TrustLedger;
 
 /// The right-pane analyzer UI: age selector, profile label, Run button,
 /// progress, a result summary, and a "review pending suggestions" walker
@@ -33,6 +34,11 @@ public:
                   PlaybackController* playback,
                   FeedbackStore* feedback,
                   QWidget* parent = nullptr);
+
+    /// MainWindow injects its TrustLedger so the review actions can
+    /// drive reward/penalty for each Suggested marker's contributing
+    /// authors. Can be null in tests.
+    void setTrustLedger(TrustLedger* ledger);
 
     /// Set the current source video and its known duration. Pass an empty
     /// path to disable Run.
@@ -80,6 +86,7 @@ private:
     MarkerModel*        m_markers    = nullptr;
     PlaybackController* m_playback   = nullptr;
     FeedbackStore*      m_feedback   = nullptr;
+    TrustLedger*        m_trust      = nullptr;
     AnalysisController* m_controller = nullptr;
 
     QString m_sourcePath;

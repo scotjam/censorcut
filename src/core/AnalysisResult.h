@@ -23,6 +23,11 @@ struct Suggestion {
     qint64      endMs      = 0;
     double      score      = 0.0;
     QStringList reasons;
+    /// Pubkey hexes of peer authors whose accept-decision feedback rows
+    /// near-matched frames in [startMs, endMs). The C++ side propagates
+    /// these onto the resulting Marker; on confirm/reject of the marker
+    /// MainWindow drives TrustLedger reward/penalty for each author.
+    QStringList contributingAuthors;
 };
 
 /// Per-category fusion summary. Helps the user see *why* no suggestions

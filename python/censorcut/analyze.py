@@ -312,6 +312,33 @@ def main(argv: Optional[List[str]] = None) -> int:
                         suggestion_embeddings.append({"tMs": int(t_ms), "vec": vec})
                         break
 
+    # Attribute each suggestion to the peer authors whose accept-decision
+    # rows were near-cosine to frames inside the suggestion range. The C++
+    # side reads contributingAuthors and feeds it back into TrustLedger
+    # when the user accepts/rejects the marker.
+    if clip_used:
+        try:
+            from .detectors import vision_clip  # noqa: WPS433
+            contributors_per_frame = getattr(vision_clip.run,
+                                             "last_frame_contributors", []) or []
+        except Exception:
+            contributors_per_frame = []
+        if contributors_per_frame and all_suggestions:
+            for s in all_suggestions:
+                seen: Dict[str, int] = {}
+                st, en = s["startMs"], s["endMs"]
+                for t_ms, authors in contributors_per_frame:
+                    if not (st <= t_ms < en):
+                        continue
+                    for a in authors:
+                        if not a:
+                            continue
+                        seen[a] = seen.get(a, 0) + 1
+                # Top 10 contributors by how many frames they near-matched.
+                ranked = sorted(seen.items(), key=lambda kv: -kv[1])[:10]
+                if ranked:
+                    s["contributingAuthors"] = [a for a, _ in ranked]
+
     result = {
         "schemaVersion": 1,
         "sourceFile":   str(Path(input_path).resolve()),

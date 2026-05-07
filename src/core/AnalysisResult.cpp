@@ -104,6 +104,14 @@ AnalysisResult parseAnalysisResultJson(const QByteArray& jsonBytes, QString* err
                         s.reasons.append(QString::fromStdString(rj.get<std::string>()));
                 }
             }
+            if (sj.contains("contributingAuthors") &&
+                sj.at("contributingAuthors").is_array()) {
+                for (const auto& aj : sj.at("contributingAuthors")) {
+                    if (aj.is_string())
+                        s.contributingAuthors.append(
+                            QString::fromStdString(aj.get<std::string>()));
+                }
+            }
             if (s.endMs > s.startMs && !s.category.isEmpty())
                 result.suggestions.append(s);
         }

@@ -15,6 +15,7 @@
 #include "core/PlaybackController.h"
 #include "core/Project.h"
 #include "core/SyncProcess.h"
+#include "core/TrustLedger.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -73,6 +74,7 @@ MainWindow::MainWindow(QWidget* parent)
     m_markers      = new MarkerModel(this);
     m_exportQueue  = new ExportQueue(this);
     m_feedback     = new FeedbackStore(this);
+    m_trust        = new TrustLedger(this);
 
     buildUi();
     buildMenus();
@@ -142,6 +144,7 @@ void MainWindow::buildUi()
     m_markerList->setSelectionMode(QAbstractItemView::ExtendedSelection);
 
     m_analyzer = new AnalyzerPanel(m_markers, m_playback.get(), m_feedback, splitter);
+    m_analyzer->setTrustLedger(m_trust);
 
     splitter->addWidget(m_markerList);
     splitter->addWidget(m_analyzer);
@@ -812,11 +815,21 @@ void MainWindow::onMarkerListContextMenu(const QPoint& pos)
             m_markers->updateMarkerById(ids.first(), copy);
             if (m_feedback && m->source == Source::Suggested)
                 m_feedback->recordDecision(copy, FeedbackStore::Decision::Accepted);
+            if (m_trust && m->source == Source::Suggested) {
+                for (const QString& a : m->contributingAuthors) {
+                    if (!a.isEmpty()) m_trust->rewardAuthor(a);
+                }
+            }
         } else if (chosen == reject) {
             Marker copy = *m; copy.status = Status::Rejected;
             m_markers->updateMarkerById(ids.first(), copy);
             if (m_feedback && m->source == Source::Suggested)
                 m_feedback->recordDecision(copy, FeedbackStore::Decision::Rejected);
+            if (m_trust && m->source == Source::Suggested) {
+                for (const QString& a : m->contributingAuthors) {
+                    if (!a.isEmpty()) m_trust->penalizeAuthor(a);
+                }
+            }
         } else if (chosen == del) {
             m_markers->removeMarkerById(ids.first());
         }
@@ -846,6 +859,13 @@ void MainWindow::onMarkerListContextMenu(const QPoint& pos)
             m_markers->updateMarkerById(id, copy);
             if (m_feedback && m->source == Source::Suggested)
                 m_feedback->recordDecision(copy, decision);
+            if (m_trust && m->source == Source::Suggested) {
+                for (const QString& a : m->contributingAuthors) {
+                    if (a.isEmpty()) continue;
+                    if (target == Status::Confirmed) m_trust->rewardAuthor(a);
+                    else                             m_trust->penalizeAuthor(a);
+                }
+            }
         }
     } else if (chosen == deleteAll) {
         for (const QUuid& id : ids) m_markers->removeMarkerById(id);

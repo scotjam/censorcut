@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 #include <QUuid>
 #include <cstdint>
 #include <nlohmann/json_fwd.hpp>
@@ -30,6 +31,11 @@ struct Marker {
     Source  source      = Source::Manual;
     double  confidence  = 1.0;
     Status  status      = Status::Confirmed;
+    /// Pubkey hexes of peers whose accept-decision feedback rows
+    /// near-matched frames inside this marker's range. Populated by
+    /// the analyzer when reading peers.jsonl. Used by MainWindow on
+    /// confirm/reject to drive TrustLedger reward/penalty.
+    QStringList contributingAuthors;
 
     [[nodiscard]] qint64 durationMs() const noexcept { return endMs - startMs; }
     [[nodiscard]] bool   isValid()    const noexcept { return endMs > startMs; }

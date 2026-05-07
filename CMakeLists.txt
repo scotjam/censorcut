@@ -21,7 +21,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Gui)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Gui Network)
 qt_standard_project_setup()
 
 find_package(nlohmann_json 3.11 REQUIRED)
@@ -82,6 +82,8 @@ add_library(censorcut_core STATIC
     src/core/FeedbackStore.cpp
     src/core/FingerprintMatcher.h
     src/core/FingerprintMatcher.cpp
+    src/core/EditsClient.h
+    src/core/EditsClient.cpp
 )
 target_include_directories(censorcut_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -90,6 +92,7 @@ target_include_directories(censorcut_core PUBLIC
 target_link_libraries(censorcut_core PUBLIC
     Qt6::Core
     Qt6::Gui
+    Qt6::Network
     nlohmann_json::nlohmann_json
     ${LIBVLC_LIBRARIES}
 )
@@ -111,6 +114,8 @@ qt_add_executable(censorcut
     src/ui/ExportQueuePanel.cpp
     src/ui/AnalyzerPanel.h
     src/ui/AnalyzerPanel.cpp
+    src/ui/EditsPullDialog.h
+    src/ui/EditsPullDialog.cpp
 )
 target_link_libraries(censorcut PRIVATE
     censorcut_core

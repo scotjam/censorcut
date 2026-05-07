@@ -1,10 +1,12 @@
 #include "MainWindow.h"
 
 #include "AnalyzerPanel.h"
+#include "EditsPullDialog.h"
 #include "ExportDialog.h"
 #include "ExportQueuePanel.h"
 #include "TimelineWidget.h"
 #include "VideoSurface.h"
+#include "core/EditsClient.h"
 #include "core/ExportQueue.h"
 #include "core/FeedbackStore.h"
 #include "core/MarkerModel.h"
@@ -14,8 +16,10 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QDockWidget>
+#include <QInputDialog>
 #include <QPushButton>
 #include <QSettings>
+#include <QUrl>
 #include <QCloseEvent>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -179,6 +183,15 @@ void MainWindow::buildMenus()
     auto* quitAction = fileMenu->addAction(QStringLiteral("&Quit"));
     quitAction->setShortcut(QKeySequence::Quit);
     connect(quitAction, &QAction::triggered, this, &QWidget::close);
+
+    auto* toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
+    auto* setEditsUrl = toolsMenu->addAction(
+        QStringLiteral("Set &Edits Server URL..."));
+    connect(setEditsUrl, &QAction::triggered, this, &MainWindow::onSetEditsServerUrl);
+    auto* pullEdits = toolsMenu->addAction(
+        QStringLiteral("&Pull Edits from Server..."));
+    pullEdits->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E));
+    connect(pullEdits, &QAction::triggered, this, &MainWindow::onPullEditsFromServer);
 
     auto* editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
     auto* markStart = editMenu->addAction(QStringLiteral("Mark cut &start"));
@@ -482,6 +495,51 @@ void MainWindow::onExportProject()
     }
 
     m_exportQueue->enqueue(p, dlg.outputPath(), dlg.quality());
+}
+
+void MainWindow::onSetEditsServerUrl()
+{
+    const QString current = EditsClient::configuredServerUrl();
+    bool ok = false;
+    const QString url = QInputDialog::getText(
+        this, tr("Edits server URL"),
+        tr("HTTP URL of an edits repository server (e.g. http://127.0.0.1:8765).\n"
+           "Leave blank to disable querying. The URL is saved per user."),
+        QLineEdit::Normal, current, &ok);
+    if (!ok) return;
+    EditsClient::setConfiguredServerUrl(url.trimmed());
+    if (url.trimmed().isEmpty()) {
+        statusBar()->showMessage(tr("Edits server URL cleared."), 3000);
+    } else {
+        statusBar()->showMessage(tr("Edits server URL set to %1").arg(url.trimmed()), 3000);
+    }
+}
+
+void MainWindow::onPullEditsFromServer()
+{
+    const FilmFingerprint fp = m_analyzer ? m_analyzer->latestFingerprint() : FilmFingerprint{};
+    if (!fp.isValid()) {
+        QMessageBox::information(this, tr("No fingerprint"),
+            tr("Run analysis on the current movie first — the edits server is "
+               "indexed by film fingerprint, which is computed during analysis."));
+        return;
+    }
+    QString url = EditsClient::configuredServerUrl();
+    if (url.isEmpty()) {
+        onSetEditsServerUrl();
+        url = EditsClient::configuredServerUrl();
+        if (url.isEmpty()) return;
+    }
+    const QUrl parsed(url);
+    if (!parsed.isValid() || parsed.scheme().isEmpty()) {
+        QMessageBox::warning(this, tr("Invalid server URL"),
+            tr("\"%1\" doesn't look like a valid URL.").arg(url));
+        return;
+    }
+    auto* dlg = new EditsPullDialog(m_markers, fp, this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->start(parsed);
+    dlg->show();
 }
 
 void MainWindow::onForgetFeedback()

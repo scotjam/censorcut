@@ -284,6 +284,7 @@ void AnalyzerPanel::onCompleted(const AnalysisResult& result)
     setRunning(false);
 
     if (m_feedback) m_feedback->setLatestEmbeddings(result.frameEmbeddings);
+    m_latestFingerprint = result.fingerprint;
 
     int added = 0;
     if (m_markers) {

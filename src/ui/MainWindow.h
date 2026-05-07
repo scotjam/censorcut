@@ -36,6 +36,8 @@ private slots:
     void onSaveSidecar();
     void onExportProject();
     void onForgetFeedback();
+    void onSetEditsServerUrl();
+    void onPullEditsFromServer();
     void onMarkStart();
     void onMarkEnd();
     void onPositionChanged(qint64 ms);

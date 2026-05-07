@@ -12,8 +12,14 @@ namespace censorcut {
 
 namespace {
 
-constexpr qint64 kMaxResponseBytes = 32 * 1024 * 1024;  // 32 MB hard cap
-constexpr int    kRequestTimeoutMs = 15000;
+constexpr qint64 kMaxResponseBytes  = 32 * 1024 * 1024;  // 32 MB hard cap
+constexpr int    kRequestTimeoutMs  = 15000;
+/// Defense in depth — the wire byte cap stops huge payloads, but a
+/// payload could still pack a million tiny anchors / cuts and force
+/// us to allocate per-element. Match the server-side limits in
+/// edits/src/schema.rs (MAX_ANCHORS, MAX_CUTS).
+constexpr int    kMaxAnchorsPerPack = 100;
+constexpr int    kMaxCutsPerPack    = 500;
 
 EditPack packFromJson(const nlohmann::json& j, const QByteArray& rawSlice)
 {
@@ -25,6 +31,7 @@ EditPack packFromJson(const nlohmann::json& j, const QByteArray& rawSlice)
     pack.rawJson      = rawSlice;
     if (j.contains("film_anchors") && j.at("film_anchors").is_array()) {
         for (const auto& aj : j.at("film_anchors")) {
+            if (pack.filmAnchors.size() >= kMaxAnchorsPerPack) break;
             if (!aj.is_object()) continue;
             FingerprintAnchor a;
             a.tau   = aj.value("tau", 0.0);
@@ -34,6 +41,7 @@ EditPack packFromJson(const nlohmann::json& j, const QByteArray& rawSlice)
     }
     if (j.contains("cuts") && j.at("cuts").is_array()) {
         for (const auto& cj : j.at("cuts")) {
+            if (pack.cuts.size() >= kMaxCutsPerPack) break;
             if (!cj.is_object()) continue;
             EditPackCut c;
             c.startMs  = cj.value("start_ms", qint64{0});

@@ -73,6 +73,10 @@ AnalysisResult parseAnalysisResultJson(const QByteArray& jsonBytes, QString* err
     }
 
     if (j.contains("fingerprint") && j.at("fingerprint").is_object()) {
+        // The analyzer caps anchors at 100 by design; allow 2× headroom
+        // for forward compat, then truncate. Defense in depth: the JSON
+        // could come from a tampered sidecar, not just our own writer.
+        constexpr int kMaxFingerprintAnchors = 200;
         const auto& fj = j.at("fingerprint");
         FilmFingerprint fp;
         fp.version           = fj.value("version", 1);
@@ -81,6 +85,7 @@ AnalysisResult parseAnalysisResultJson(const QByteArray& jsonBytes, QString* err
         fp.digest            = QString::fromStdString(fj.value("digest", std::string{}));
         if (fj.contains("anchors") && fj.at("anchors").is_array()) {
             for (const auto& aj : fj.at("anchors")) {
+                if (fp.anchors.size() >= kMaxFingerprintAnchors) break;
                 if (!aj.is_object()) continue;
                 FingerprintAnchor a;
                 a.tau   = aj.value("tau", 0.0);
@@ -107,7 +112,9 @@ AnalysisResult parseAnalysisResultJson(const QByteArray& jsonBytes, QString* err
             }
             if (sj.contains("contributingAuthors") &&
                 sj.at("contributingAuthors").is_array()) {
+                constexpr int kMaxContributingAuthors = 50;
                 for (const auto& aj : sj.at("contributingAuthors")) {
+                    if (s.contributingAuthors.size() >= kMaxContributingAuthors) break;
                     if (aj.is_string())
                         s.contributingAuthors.append(
                             QString::fromStdString(aj.get<std::string>()));

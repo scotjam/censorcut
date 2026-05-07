@@ -308,8 +308,20 @@ void TrustLedger::loadInboundEndorsements()
 {
     QFile f(inboundEndorsementsPath());
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return;
+
+    // Defense in depth — the sidecar has its own size cap on the file
+    // it writes, but we shouldn't rely on it. Limit how many distinct
+    // authors and total entries we'll ingest in a single pass. Mirrors
+    // the sidecar's MAX_ENTRIES_PER_BATCH (50) × a generous author count.
+    constexpr int kMaxAuthors                   = 1000;
+    constexpr int kMaxEntriesPerAuthor          = 50;
+    constexpr int kMaxTotalEntries              = kMaxAuthors * kMaxEntriesPerAuthor;
+    int totalEntries = 0;
+
     int rows = 0;
     while (!f.atEnd()) {
+        if (m_endorsements.size() >= kMaxAuthors) break;
+        if (totalEntries >= kMaxTotalEntries) break;
         const QByteArray line = f.readLine().trimmed();
         if (line.isEmpty()) continue;
         try {
@@ -321,6 +333,7 @@ void TrustLedger::loadInboundEndorsements()
             if (!j.contains("entries") || !j["entries"].is_array()) continue;
             QHash<QString, double> targets;
             for (const auto& e : j["entries"]) {
+                if (targets.size() >= kMaxEntriesPerAuthor) break;
                 if (!e.is_object()) continue;
                 const QString tgt = QString::fromStdString(
                     e.value("target", std::string()));
@@ -329,6 +342,7 @@ void TrustLedger::loadInboundEndorsements()
                 targets.insert(tgt, score);
             }
             if (!targets.isEmpty()) {
+                totalEntries += targets.size();
                 m_endorsements[author] = targets;
                 ++rows;
             }

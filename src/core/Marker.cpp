@@ -76,7 +76,11 @@ void from_json(const nlohmann::json& j, Marker& m)
                        j.value("status", std::string{"confirmed"})));
     m.contributingAuthors.clear();
     if (j.contains("contributingAuthors") && j["contributingAuthors"].is_array()) {
+        // Defense in depth: cap to a sane upper bound. Sidecar JSON
+        // could come from a manually edited or tampered file.
+        constexpr int kMaxContributingAuthors = 50;
         for (const auto& a : j["contributingAuthors"]) {
+            if (m.contributingAuthors.size() >= kMaxContributingAuthors) break;
             if (a.is_string()) {
                 m.contributingAuthors.append(QString::fromStdString(a.get<std::string>()));
             }

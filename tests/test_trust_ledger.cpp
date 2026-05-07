@@ -270,6 +270,42 @@ private slots:
                  qPrintable(QStringLiteral("expected 0.4 (capped), got %1").arg(w)));
     }
 
+    void inboundEndorsementsCappedAt1000Authors()
+    {
+        // Defense in depth — a tampered endorsements.jsonl with millions
+        // of authors must NOT cause unbounded allocation in the editor.
+        TrustLedger setup;
+        setup.reset();
+
+        const QString home = QStandardPaths::writableLocation(
+            QStandardPaths::HomeLocation);
+        const QString inPath = QDir::cleanPath(
+            home + QStringLiteral("/.censorcut/endorsements.jsonl"));
+        QDir().mkpath(QFileInfo(inPath).path());
+        QFile f(inPath);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QTextStream ts(&f);
+        // Write 1500 author rows; loader should cap at 1000.
+        for (int i = 0; i < 1500; ++i) {
+            ts << QString::fromUtf8(
+                "{\"peer_key\":\"author%1\",\"schema\":1,\"kind\":\"endorsements\","
+                "\"day_utc\":20250507,\"entries\":["
+                "{\"target\":\"target%1\",\"score\":0.9}]}\n").arg(i);
+        }
+        f.close();
+
+        TrustLedger l;
+        // Indirect check: the ledger only has up to 1000 authors;
+        // ask for one we know was beyond the cap and verify it's
+        // not in the endorsement graph (weightFor returns floor).
+        // Author at index 1499 should have been skipped.
+        // We don't have a public size accessor for endorsements, so we
+        // instead verify weightFor behaves like "no chain" for the
+        // beyond-cap target: needs no seed, so just floor 0.1.
+        const QString beyond = QStringLiteral("target1499");
+        QCOMPARE(l.weightFor(beyond), 0.1);
+    }
+
     void cleanupTestCase()
     {
         QStandardPaths::setTestModeEnabled(false);

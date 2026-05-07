@@ -14,6 +14,7 @@ use clap::{Parser, Subcommand};
 
 mod config;
 mod schema;
+mod server;
 mod storage;
 
 #[derive(Parser, Debug)]
@@ -48,6 +49,10 @@ enum Cmd {
     /// scripts use this to confirm the binary will use the dirs they
     /// expect.
     Paths,
+    /// Run the HTTP server bound to --bind. By default the bind is
+    /// 127.0.0.1:8765 — local-only; the user opts into LAN/WAN
+    /// access by setting --bind 0.0.0.0:PORT explicitly.
+    Serve,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -70,7 +75,8 @@ fn load_allowlist(p: Option<&PathBuf>) -> Result<HashSet<String>> {
     Ok(set)
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -124,6 +130,38 @@ fn main() -> Result<()> {
             println!("allowlist size    : {}",
                      if allow.is_empty() { "0 (open)".to_string() }
                                          else { allow.len().to_string() });
+        }
+        Cmd::Serve => {
+            let allow = load_allowlist(cli.allow_pubkeys.as_ref())?;
+            let repo  = storage::Repo::open(&cli.data_dir)?;
+            let state = server::AppState {
+                repo:  std::sync::Arc::new(repo),
+                allow: std::sync::Arc::new(allow),
+            };
+            let app  = server::router(state);
+
+            // Refuse to silently expose the server to a non-loopback
+            // bind unless the user typed it themselves. Print a banner
+            // when they have so it's obvious what's happening.
+            let bind: std::net::SocketAddr = cli.bind.parse()
+                .with_context(|| format!("could not parse --bind {:?}", cli.bind))?;
+            if !bind.ip().is_loopback() {
+                eprintln!("censorcut-edits: NOTE — bound to {bind}, NOT loopback. \
+                          Anyone who can reach this address can query which film \
+                          fingerprints you host. Make sure that's what you want.");
+            }
+
+            let listener = tokio::net::TcpListener::bind(bind).await
+                .with_context(|| format!("bind {bind}"))?;
+            eprintln!("censorcut-edits: serving on http://{} (data: {})",
+                      bind, cli.data_dir.display());
+
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = tokio::signal::ctrl_c().await;
+                    eprintln!("censorcut-edits: shutting down");
+                })
+                .await?;
         }
     }
     Ok(())

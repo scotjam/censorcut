@@ -48,7 +48,16 @@ double TrustLedger::weightFor(const QString& pubkey) const
 
 void TrustLedger::rewardAuthor(const QString& pubkey)
 {
+    auto it = m_direct.find(pubkey);
+    const bool fresh = (it == m_direct.end()) || (it->interactions <= 0);
     Direct& d = m_direct[pubkey];
+    if (fresh) {
+        // Promotion from transitive to direct: inherit the bootstrap
+        // weight so a peer who was already useful through chains
+        // doesn't get demoted on their first accepted suggestion.
+        const double boot = bootstrapFloorFor(pubkey);
+        d.score = std::max(d.score, std::min(kBootstrapCap, kFloor + boot));
+    }
     d.score = clamp01_2(d.score + kAcceptDelta);
     d.interactions += 1;
     save();
@@ -57,7 +66,13 @@ void TrustLedger::rewardAuthor(const QString& pubkey)
 
 void TrustLedger::penalizeAuthor(const QString& pubkey)
 {
+    auto it = m_direct.find(pubkey);
+    const bool fresh = (it == m_direct.end()) || (it->interactions <= 0);
     Direct& d = m_direct[pubkey];
+    if (fresh) {
+        const double boot = bootstrapFloorFor(pubkey);
+        d.score = std::max(d.score, std::min(kBootstrapCap, kFloor + boot));
+    }
     d.score = clamp01_2(d.score - kRejectDelta);
     d.interactions += 1;
     save();

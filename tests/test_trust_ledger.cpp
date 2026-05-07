@@ -117,23 +117,82 @@ private slots:
         QVERIFY(l.weightFor(target) <= 0.4 + 1e-9);
     }
 
-    void directTrustDominatesBootstrap()
+    void promotionInheritsBootstrap()
     {
-        // Even with strong transitive chains pushing target's bootstrap
-        // toward 0.4, once we have direct experience with target the
-        // direct score takes over.
+        // A peer who was reachable transitively (e.g. 0.4) and is then
+        // rewarded for their first useful suggestion should NOT regress
+        // to floor + delta (= 0.15). The promotion should seed direct
+        // trust from the bootstrap value so the graduation isn't a
+        // punishment.
         TrustLedger l;
         l.reset();
-        const QString seed = QStringLiteral("seedyseed");
-        const QString tgt  = QStringLiteral("targety");
+        const QString seed = QStringLiteral("seedy");
+        const QString tgt  = QStringLiteral("graduate");
+        // Seed must be at >= 0.8 to participate in bootstrap walk.
         for (int i = 0; i < 14; ++i) l.rewardAuthor(seed);
         QHash<QString, double> e; e.insert(tgt, 1.0);
         l.setEndorsementsFrom(seed, e);
-        // Direct experience: one penalty drops tgt to floor.
-        l.penalizeAuthor(tgt);
-        // tgt direct = max(0, 0.1 - 0.08) = 0.02. Bootstrap is no longer
-        // consulted because interactions > 0. So weightFor returns 0.02.
-        QCOMPARE(l.weightFor(tgt), 0.02);
+        // tgt's bootstrap floor: 0.1 + 0.5 × 0.8 × 1.0 = 0.5 → capped at 0.4.
+        QCOMPARE(l.weightFor(tgt), 0.4);
+
+        // First reward: should inherit bootstrap (0.4) and add accept
+        // delta → 0.45.
+        l.rewardAuthor(tgt);
+        QVERIFY2(qAbs(l.weightFor(tgt) - 0.45) < 1e-9,
+                 qPrintable(QStringLiteral("expected 0.45, got %1").arg(l.weightFor(tgt))));
+    }
+
+    void promotionByPenaltyAlsoInheritsBootstrap()
+    {
+        // Same inheritance rule on penalty: a transitively-reachable
+        // peer who turns out bad shouldn't get a free pass either —
+        // we drop the inherited bootstrap by the penalty delta.
+        TrustLedger l;
+        l.reset();
+        const QString seed = QStringLiteral("seedy");
+        const QString tgt  = QStringLiteral("badgrad");
+        for (int i = 0; i < 14; ++i) l.rewardAuthor(seed);
+        QHash<QString, double> e; e.insert(tgt, 1.0);
+        l.setEndorsementsFrom(seed, e);
+        l.penalizeAuthor(tgt);  // 0.4 - 0.08 = 0.32
+        QVERIFY2(qAbs(l.weightFor(tgt) - 0.32) < 1e-9,
+                 qPrintable(QStringLiteral("expected 0.32, got %1").arg(l.weightFor(tgt))));
+    }
+
+    void unrelatedDirectTrustGetsNoBootstrapBoost()
+    {
+        // A peer with no incoming endorsements still seeds at floor on
+        // first reward (no bootstrap path means inheritance is 0).
+        TrustLedger l;
+        l.reset();
+        const QString k = QStringLiteral("isolated");
+        l.rewardAuthor(k);
+        QCOMPARE(l.weightFor(k), 0.15);  // 0.1 + 0.05
+    }
+
+    void directTrustDominatesBootstrapAfterPromotion()
+    {
+        // After promotion, new endorsement chains no longer affect a
+        // peer's weight — direct experience takes over.
+        TrustLedger l;
+        l.reset();
+        const QString seedA = QStringLiteral("seedAA");
+        const QString seedB = QStringLiteral("seedBB");
+        const QString tgt   = QStringLiteral("graduated2");
+        for (int i = 0; i < 14; ++i) l.rewardAuthor(seedA);
+        QHash<QString, double> eA; eA.insert(tgt, 1.0);
+        l.setEndorsementsFrom(seedA, eA);
+        l.rewardAuthor(tgt);  // inherits 0.4, climbs to 0.45
+        QVERIFY2(qAbs(l.weightFor(tgt) - 0.45) < 1e-9,
+                 qPrintable(QStringLiteral("expected 0.45, got %1").arg(l.weightFor(tgt))));
+
+        // Add a second strong seed endorsing tgt. If tgt were unseen
+        // this would push bootstrap higher, but tgt is direct now.
+        for (int i = 0; i < 14; ++i) l.rewardAuthor(seedB);
+        QHash<QString, double> eB; eB.insert(tgt, 1.0);
+        l.setEndorsementsFrom(seedB, eB);
+        QVERIFY2(qAbs(l.weightFor(tgt) - 0.45) < 1e-9,
+                 qPrintable(QStringLiteral("expected still 0.45, got %1").arg(l.weightFor(tgt))));
     }
 
     void resetWipesEverything()

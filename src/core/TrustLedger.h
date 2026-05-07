@@ -63,6 +63,18 @@ public:
     void load();
     void save() const;
 
+    /// Write `outbound_endorsements.jsonl` with one line per entry from
+    /// outboundEndorsements(). The sidecar (censorcut-sync) reads this
+    /// to construct a daily EndorsementBatch and broadcast it.
+    /// Idempotent: rewrites the entire file each time.
+    void writeOutboundEndorsements() const;
+
+    /// Read `endorsements.jsonl` (the sidecar's dedup'd inbound file) and
+    /// merge each StoredEndorsement row into m_endorsements, replacing
+    /// any prior row for the same author. Best-effort: malformed lines
+    /// are skipped silently.
+    void loadInboundEndorsements();
+
     static constexpr double kFloor          = 0.1;
     static constexpr double kCap            = 2.0;
     static constexpr double kAcceptDelta    = 0.05;

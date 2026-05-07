@@ -27,6 +27,7 @@ TrustLedger::TrustLedger(QObject* parent)
     : QObject(parent)
 {
     load();
+    loadInboundEndorsements();
 }
 
 QString TrustLedger::filePath() const
@@ -34,6 +35,22 @@ QString TrustLedger::filePath() const
     const QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
     return QDir::cleanPath(home + QStringLiteral("/.censorcut/trust.json"));
 }
+
+namespace {
+
+QString outboundEndorsementsPath()
+{
+    const QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+    return QDir::cleanPath(home + QStringLiteral("/.censorcut/outbound_endorsements.jsonl"));
+}
+
+QString inboundEndorsementsPath()
+{
+    const QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+    return QDir::cleanPath(home + QStringLiteral("/.censorcut/endorsements.jsonl"));
+}
+
+} // namespace
 
 double TrustLedger::weightFor(const QString& pubkey) const
 {
@@ -261,6 +278,66 @@ void TrustLedger::save() const
     if (!f.open(QIODevice::WriteOnly)) return;
     f.write(out.data(), qsizetype(out.size()));
     f.commit();
+
+    // Mirror the publishable subset to outbound_endorsements.jsonl so
+    // the sidecar can package it into a daily batch and broadcast.
+    writeOutboundEndorsements();
+}
+
+void TrustLedger::writeOutboundEndorsements() const
+{
+    const QString path = outboundEndorsementsPath();
+    QDir().mkpath(QFileInfo(path).path());
+    const QHash<QString, double> outbound = outboundEndorsements();
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) return;
+    QStringList sortedTargets = outbound.keys();
+    std::sort(sortedTargets.begin(), sortedTargets.end());
+    for (const QString& target : sortedTargets) {
+        nlohmann::json row;
+        row["target"] = target.toStdString();
+        row["score"]  = outbound.value(target);
+        const std::string line = row.dump();
+        f.write(line.data(), qsizetype(line.size()));
+        f.write("\n", 1);
+    }
+    f.commit();
+}
+
+void TrustLedger::loadInboundEndorsements()
+{
+    QFile f(inboundEndorsementsPath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return;
+    int rows = 0;
+    while (!f.atEnd()) {
+        const QByteArray line = f.readLine().trimmed();
+        if (line.isEmpty()) continue;
+        try {
+            const auto j = nlohmann::json::parse(line.constData(),
+                                                 line.constData() + line.size());
+            const QString author = QString::fromStdString(
+                j.value("peer_key", std::string()));
+            if (author.isEmpty()) continue;
+            if (!j.contains("entries") || !j["entries"].is_array()) continue;
+            QHash<QString, double> targets;
+            for (const auto& e : j["entries"]) {
+                if (!e.is_object()) continue;
+                const QString tgt = QString::fromStdString(
+                    e.value("target", std::string()));
+                const double score = e.value("score", 0.0);
+                if (tgt.isEmpty()) continue;
+                targets.insert(tgt, score);
+            }
+            if (!targets.isEmpty()) {
+                m_endorsements[author] = targets;
+                ++rows;
+            }
+        } catch (...) {
+            // skip malformed line
+        }
+    }
+    f.close();
+    if (rows > 0) emit changed();
 }
 
 } // namespace censorcut

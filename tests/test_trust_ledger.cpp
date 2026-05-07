@@ -1,9 +1,12 @@
 #include "core/TrustLedger.h"
 
+#include <QDir>
+#include <QFile>
 #include <QObject>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextStream>
 
 using namespace censorcut;
 
@@ -204,6 +207,67 @@ private slots:
         QVERIFY(l.weightFor(k) > 0.1);
         l.reset();
         QCOMPARE(l.weightFor(k), 0.1);
+    }
+
+    void writeOutboundProducesJsonl()
+    {
+        TrustLedger l;
+        l.reset();
+        const QString hi = QStringLiteral("highk");
+        for (int i = 0; i < 15; ++i) l.rewardAuthor(hi);  // -> 0.85
+        // outbound is written as a side-effect of save() (which fires
+        // on every reward).
+        const QString home = QStandardPaths::writableLocation(
+            QStandardPaths::HomeLocation);
+        const QString outPath = QDir::cleanPath(
+            home + QStringLiteral("/.censorcut/outbound_endorsements.jsonl"));
+        QFile f(outPath);
+        QVERIFY(f.exists());
+        QVERIFY(f.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QByteArray content = f.readAll();
+        f.close();
+        QVERIFY(content.contains("highk"));
+        QVERIFY(content.contains("score"));
+    }
+
+    void loadInboundEndorsementsTakesEffect()
+    {
+        // Clear any outbound from the previous test run since the
+        // ledger ctor calls loadInboundEndorsements which reads the
+        // sidecar file.
+        TrustLedger setup;
+        setup.reset();
+
+        const QString home = QStandardPaths::writableLocation(
+            QStandardPaths::HomeLocation);
+        const QString inPath = QDir::cleanPath(
+            home + QStringLiteral("/.censorcut/endorsements.jsonl"));
+        QDir().mkpath(QFileInfo(inPath).path());
+
+        // Write a synthetic endorsements.jsonl row matching the sidecar's
+        // StoredEndorsement shape: {peer_key, schema, kind, day_utc, entries}.
+        QFile f(inPath);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QTextStream ts(&f);
+        ts << R"({"peer_key":"sentinelpeer","schema":1,"kind":"endorsements",)"
+              R"("day_utc":20250507,"entries":[)"
+              R"({"target":"newpeer","score":0.95}]})" << "\n";
+        f.close();
+
+        // Now construct a fresh ledger; ctor invokes loadInboundEndorsements.
+        TrustLedger l;
+        // Build a directly-trusted seed at >= 0.8 so the bootstrap walker
+        // will use sentinelpeer's endorsement.
+        for (int i = 0; i < 14; ++i) l.rewardAuthor(QStringLiteral("sentinelpeer"));
+        // weightFor("newpeer"): bootstrap = 0.5 × score(sentinel) × 0.95.
+        // sentinel was bumped from inherited bootstrap (0) + 14 rewards.
+        // First reward inherits floor (0.1) since sentinel had no chain
+        // when rewarded; subsequent rewards add 0.05 each: 0.1 + 14*0.05 = 0.8.
+        QVERIFY(l.weightFor(QStringLiteral("sentinelpeer")) >= 0.8 - 1e-9);
+        const double w = l.weightFor(QStringLiteral("newpeer"));
+        // Expected: 0.1 + 0.5 × 0.8 × 0.95 = 0.1 + 0.38 = 0.48 → capped at 0.4.
+        QVERIFY2(qAbs(w - 0.4) < 1e-9,
+                 qPrintable(QStringLiteral("expected 0.4 (capped), got %1").arg(w)));
     }
 
     void cleanupTestCase()

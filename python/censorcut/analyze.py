@@ -122,7 +122,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--no-whisper", action="store_true",
                         help="Skip the Whisper dialogue pass even if installed")
     parser.add_argument("--no-fingerprint", action="store_true",
-                        help="Skip the 4-anchor audio fingerprint pass")
+                        help="Skip the scene-cut + pHash video fingerprint pass")
     parser.add_argument("--threshold-mul", type=float, default=1.0,
                         help="Multiplier on every category's threshold; "
                              "values <1.0 are more sensitive (more suggestions), "
@@ -234,17 +234,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             series_by_key.update(out)
             whisper_used = True
 
-    # 4b) Audio fingerprint — independent of categories. Identifies the
-    #     film by content (loud non-voice anchors) so the federated DB
-    #     can index cuts without ever knowing titles.
-    fingerprint = {"anchors": []}
+    # 4b) Video fingerprint — content identifier. Scene-cut timing +
+    #     per-cut pHash. Scale-invariant (PAL/NTSC tolerant),
+    #     codec-invariant, dub-/remaster-invariant. Different cuts
+    #     (theatrical / director's / TV) produce different digests.
+    fingerprint = {"version": 1, "anchors": []}
     if not args.no_fingerprint:
         try:
-            from .detectors import audio_fingerprint  # noqa: WPS433
+            from .detectors import video_fingerprint as vfp_mod  # noqa: WPS433
             emit_progress(0.85, "fingerprint")
-            fingerprint = audio_fingerprint.run(input_path,
-                                                duration_ms=duration_ms,
-                                                progress=emit_progress)
+            fingerprint = vfp_mod.run(input_path,
+                                       duration_ms=duration_ms,
+                                       progress=emit_progress)
         except Exception as e:
             print(f"censorcut.analyze: fingerprint pass failed: {e}",
                   file=sys.stderr)

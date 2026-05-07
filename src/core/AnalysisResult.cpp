@@ -75,16 +75,17 @@ AnalysisResult parseAnalysisResultJson(const QByteArray& jsonBytes, QString* err
     if (j.contains("fingerprint") && j.at("fingerprint").is_object()) {
         const auto& fj = j.at("fingerprint");
         FilmFingerprint fp;
-        fp.durationMs = fj.value("durationMs", qint64{0});
-        fp.digest     = QString::fromStdString(fj.value("fingerprint", std::string{}));
+        fp.version           = fj.value("version", 1);
+        fp.durationMs        = fj.value("durationMs", qint64{0});
+        fp.approxDurationMin = fj.value("approxDurationMin", 0);
+        fp.digest            = QString::fromStdString(fj.value("digest", std::string{}));
         if (fj.contains("anchors") && fj.at("anchors").is_array()) {
             for (const auto& aj : fj.at("anchors")) {
                 if (!aj.is_object()) continue;
                 FingerprintAnchor a;
-                a.tMs      = aj.value("tMs",      qint64{0});
-                a.peakLufs = aj.value("peakLufs", 0.0);
-                a.sig      = QString::fromStdString(aj.value("sig", std::string{}));
-                if (a.tMs >= 0 && !a.sig.isEmpty()) fp.anchors.append(a);
+                a.tau   = aj.value("tau", 0.0);
+                a.phash = QString::fromStdString(aj.value("phash", std::string{}));
+                if (!a.phash.isEmpty()) fp.anchors.append(a);
             }
         }
         result.fingerprint = fp;

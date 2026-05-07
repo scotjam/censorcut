@@ -27,10 +27,9 @@ EditPack packFromJson(const nlohmann::json& j, const QByteArray& rawSlice)
         for (const auto& aj : j.at("film_anchors")) {
             if (!aj.is_object()) continue;
             FingerprintAnchor a;
-            a.tMs      = aj.value("t_ms", qint64{0});
-            a.peakLufs = aj.value("peak_lufs", 0.0);
-            a.sig      = QString::fromStdString(aj.value("sig", std::string{}));
-            if (!a.sig.isEmpty()) pack.filmAnchors.append(a);
+            a.tau   = aj.value("tau", 0.0);
+            a.phash = QString::fromStdString(aj.value("phash", std::string{}));
+            if (!a.phash.isEmpty()) pack.filmAnchors.append(a);
         }
     }
     if (j.contains("cuts") && j.at("cuts").is_array()) {

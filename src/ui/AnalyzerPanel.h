@@ -44,9 +44,8 @@ public:
     /// path to disable Run.
     void setMovie(const QString& sourcePath, qint64 durationMs);
 
-    /// The most recent analysis result's fingerprint (empty if no run yet).
-    /// Used by the Pull-edits-server flow to identify the film without
-    /// crossing path/title boundaries.
+    /// The most recent analysis result's fingerprint (empty if no run
+    /// yet). Used by the Pull-edits-server flow as the lookup key.
     FilmFingerprint latestFingerprint() const { return m_latestFingerprint; }
 
     /// The age the user has selected. Other code can use AgeProfile::forAge
@@ -92,7 +91,7 @@ private:
     QString m_sourcePath;
     qint64  m_durationMs = 0;
     int     m_age = 8;
-    FilmFingerprint m_latestFingerprint;
+    FilmFingerprint  m_latestFingerprint;
 
     // Review state
     QUuid  m_reviewId;          // marker currently being auditioned, null if none

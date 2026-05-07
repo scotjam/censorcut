@@ -110,8 +110,7 @@ mod tests {
             schema:        1,
             film_fp:       film_fp.to_string(),
             film_anchors:  vec![PackAnchor {
-                t_ms: 600_000, peak_lufs: -10.0,
-                sig: "1111aaaa00001111".to_string(),
+                tau: 0.10, phash: "1111aaaa00001111".to_string(),
             }],
             author_pubkey: hex::encode(sk.verifying_key().to_bytes()),
             created_utc:   chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),

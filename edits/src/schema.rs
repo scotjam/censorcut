@@ -40,13 +40,15 @@ pub fn is_allowed_category_char(c: char) -> bool {
 /// Anchor descriptor we keep with the pack so receivers can verify
 /// the pack is indexed against THEIR copy of the film, not just any
 /// film with the same digest.
+///
+/// Shape matches the video fingerprint v1: `tau` is in [0, 1] (the
+/// scale-invariant body-window position) and `phash` is the
+/// per-cut perceptual hash (16 hex chars = 64 bits).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PackAnchor {
-    pub t_ms:     i64,
-    pub peak_lufs: f32,
-    /// 16-char hex; matches the M8.1 spectral signature shape.
-    pub sig:      String,
+    pub tau:   f32,
+    pub phash: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,14 +164,13 @@ pub fn validate_shape(raw: &str) -> Result<EditPack, PackError> {
         return Err(PackError::TooManyAnchors);
     }
     for a in &pack.film_anchors {
-        if a.sig.len() != 16 || hex::decode(&a.sig).is_err() {
-            return Err(PackError::BadAnchor(format!("sig must be 16 hex, got {}", a.sig.len())));
+        if a.phash.len() != 16 || hex::decode(&a.phash).is_err() {
+            return Err(PackError::BadAnchor(format!(
+                "phash must be 16 hex, got {}", a.phash.len())));
         }
-        if a.t_ms < 0 {
-            return Err(PackError::BadAnchor("negative t_ms".to_string()));
-        }
-        if !a.peak_lufs.is_finite() {
-            return Err(PackError::BadAnchor("non-finite peak_lufs".to_string()));
+        if !a.tau.is_finite() || !(0.0..=1.0).contains(&a.tau) {
+            return Err(PackError::BadAnchor(format!(
+                "tau must be finite in [0, 1], got {}", a.tau)));
         }
     }
     if pack.cuts.len() > MAX_CUTS {
@@ -242,8 +243,8 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey, SECRET_KEY_LENGTH};
     use rand::rngs::OsRng;
 
-    fn good_anchor(t_ms: i64, sig: &str) -> PackAnchor {
-        PackAnchor { t_ms, peak_lufs: -10.0, sig: sig.to_string() }
+    fn good_anchor(tau: f32, phash: &str) -> PackAnchor {
+        PackAnchor { tau, phash: phash.to_string() }
     }
 
     fn good_pack() -> EditPack {
@@ -251,10 +252,10 @@ mod tests {
             schema:        1,
             film_fp:       "0".repeat(64),
             film_anchors:  vec![
-                good_anchor(600_000,  "1111aaaa00001111"),
-                good_anchor(1_200_000,"2222bbbb00002222"),
-                good_anchor(4_500_000,"3333cccc00003333"),
-                good_anchor(5_100_000,"4444dddd00004444"),
+                good_anchor(0.10, "1111aaaa00001111"),
+                good_anchor(0.30, "2222bbbb00002222"),
+                good_anchor(0.70, "3333cccc00003333"),
+                good_anchor(0.92, "4444dddd00004444"),
             ],
             author_pubkey: "0".repeat(64),
             created_utc:   chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),

@@ -1,6 +1,6 @@
 #include "FingerprintMatcher.h"
 
-#include <QSet>
+#include <QPair>
 
 #include <algorithm>
 #include <cmath>
@@ -9,137 +9,120 @@ namespace censorcut {
 
 namespace {
 
-/// Popcount on a 64-bit integer using the textbook divide-and-conquer
-/// approach. We don't depend on a builtin so this stays portable across
-/// MSVC and GCC without an extra include.
-int popcount64(quint64 x)
+int hexNibble(QChar c)
 {
-    x = x - ((x >> 1) & 0x5555555555555555ULL);
-    x = (x & 0x3333333333333333ULL) + ((x >> 2) & 0x3333333333333333ULL);
-    x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
-    return int((x * 0x0101010101010101ULL) >> 56);
+    if (c >= QLatin1Char('0') && c <= QLatin1Char('9')) return int(c.unicode()) - '0';
+    if (c >= QLatin1Char('a') && c <= QLatin1Char('f')) return int(c.unicode()) - 'a' + 10;
+    if (c >= QLatin1Char('A') && c <= QLatin1Char('F')) return int(c.unicode()) - 'A' + 10;
+    return -1;
 }
 
-bool tryParseHex64(const QString& s, quint64& out)
+int popcount(int x)
 {
-    if (s.size() != 16) return false;
-    bool ok = false;
-    out = s.toULongLong(&ok, 16);
-    return ok;
+    int n = 0;
+    while (x) { n += (x & 1); x >>= 1; }
+    return n;
 }
 
 } // namespace
 
-int hexHammingDistance(const QString& sigA, const QString& sigB)
+int hexHammingDistance(const QString& a, const QString& b)
 {
-    quint64 a = 0, b = 0;
-    if (!tryParseHex64(sigA, a)) return 64;
-    if (!tryParseHex64(sigB, b)) return 64;
-    return popcount64(a ^ b);
+    if (a.size() != 16 || b.size() != 16) return 64;
+    int total = 0;
+    for (int i = 0; i < 16; ++i) {
+        const int na = hexNibble(a.at(i));
+        const int nb = hexNibble(b.at(i));
+        if (na < 0 || nb < 0) return 64;
+        total += popcount(na ^ nb);
+    }
+    return total;
 }
 
 QList<AnchorMatch> matchAnchors(const FilmFingerprint& a,
                                 const FilmFingerprint& b,
-                                int maxHamming)
+                                double maxTauDelta,
+                                int    maxHamming)
 {
-    QList<AnchorMatch> out;
-    if (a.anchors.isEmpty() || b.anchors.isEmpty()) return out;
+    QList<AnchorMatch> matches;
+    if (a.anchors.isEmpty() || b.anchors.isEmpty()) return matches;
 
-    // Build all (aIdx, bIdx, dist) triples within maxHamming, then
-    // greedily pick the closest pairs, never reusing an index on either
-    // side. This is fine for our 4×4 problem; for larger sets we'd want
-    // the Hungarian algorithm, but 16 candidates is trivial.
-    QList<AnchorMatch> candidates;
-    candidates.reserve(a.anchors.size() * b.anchors.size());
+    QList<bool> bUsed(b.anchors.size(), false);
+    int j = 0;
     for (int i = 0; i < a.anchors.size(); ++i) {
-        for (int j = 0; j < b.anchors.size(); ++j) {
-            const int d = hexHammingDistance(a.anchors.at(i).sig,
-                                              b.anchors.at(j).sig);
-            if (d <= maxHamming) {
-                candidates.append({i, j, d});
+        const double tauA = a.anchors.at(i).tau;
+        while (j < b.anchors.size() && b.anchors.at(j).tau < tauA - maxTauDelta) {
+            ++j;
+        }
+        int bestIdx = -1;
+        int bestHd  = maxHamming + 1;
+        for (int k = j; k < b.anchors.size(); ++k) {
+            const double tauB = b.anchors.at(k).tau;
+            if (tauB > tauA + maxTauDelta) break;
+            if (bUsed[k]) continue;
+            const int hd = hexHammingDistance(a.anchors.at(i).phash,
+                                              b.anchors.at(k).phash);
+            if (hd <= maxHamming && hd < bestHd) {
+                bestHd  = hd;
+                bestIdx = k;
             }
         }
+        if (bestIdx >= 0) {
+            bUsed[bestIdx] = true;
+            matches.append(AnchorMatch{ i, bestIdx, bestHd });
+        }
     }
-    std::sort(candidates.begin(), candidates.end(),
-              [](const AnchorMatch& x, const AnchorMatch& y) {
-                  return x.hammingDist < y.hammingDist;
-              });
-    QSet<int> usedA, usedB;
-    for (const auto& m : candidates) {
-        if (usedA.contains(m.aIdx) || usedB.contains(m.bIdx)) continue;
-        out.append(m);
-        usedA.insert(m.aIdx);
-        usedB.insert(m.bIdx);
-    }
-    return out;
+    return matches;
 }
 
-std::optional<AffineTimeMap> fitAffine(const QList<AnchorMatch>& matches,
-                                       const FilmFingerprint& a,
-                                       const FilmFingerprint& b,
-                                       int     minMatches,
-                                       qint64  toleranceMs)
+QPair<qint64, qint64> bodyWindowForDuration(qint64 durationMs)
 {
-    if (matches.size() < minMatches) return std::nullopt;
-
-    // Closed-form linear least-squares for t_local = scale*t_remote + b.
-    const int n = matches.size();
-    double sx = 0, sy = 0, sxx = 0, sxy = 0;
-    for (const auto& m : matches) {
-        const double x = double(b.anchors.at(m.bIdx).tMs);
-        const double y = double(a.anchors.at(m.aIdx).tMs);
-        sx  += x;     sy  += y;
-        sxx += x * x; sxy += x * y;
-    }
-    const double meanX = sx / n;
-    const double meanY = sy / n;
-    const double denom = sxx - sx * meanX;
-
-    AffineTimeMap fit;
-    if (std::abs(denom) < 1e-3) {
-        // All matched anchors at (effectively) the same remote time.
-        // Fall back to scale=1, offset = meanY - meanX so the median pair
-        // lines up.
-        fit.scale    = 1.0;
-        fit.offsetMs = static_cast<qint64>(meanY - meanX);
-    } else {
-        fit.scale    = (sxy - sx * meanY) / denom;
-        fit.offsetMs = static_cast<qint64>(meanY - fit.scale * meanX);
-    }
-
-    // Sanity: a sane fit has scale within a few percent of 1. (PAL/NTSC
-    // would be 24/25 = 0.96 or 25/24 = 1.04, so we allow [0.9, 1.1].)
-    if (fit.scale < 0.9 || fit.scale > 1.1) return std::nullopt;
-
-    // Verify each matched pair lands within tolerance.
-    int agree = 0;
-    for (const auto& m : matches) {
-        const qint64 predicted = mapTime(fit, b.anchors.at(m.bIdx).tMs);
-        const qint64 actual    = a.anchors.at(m.aIdx).tMs;
-        if (std::llabs(predicted - actual) <= toleranceMs) ++agree;
-    }
-    if (agree < minMatches) return std::nullopt;
-    return fit;
+    if (durationMs <= 0) return { 0, 0 };
+    const qint64 cushion = std::min<qint64>(10LL * 60 * 1000, durationMs / 3);
+    const qint64 lo = cushion;
+    const qint64 hi = std::max<qint64>(lo + 1, durationMs - cushion);
+    return { lo, hi };
 }
 
-MatchVerdict matchFingerprints(const FilmFingerprint& a,
-                               const FilmFingerprint& b,
-                               int maxHamming, int minMatches,
-                               qint64 toleranceMs)
+AffineTimeMap alignmentFromDurations(qint64 localDurMs, qint64 remoteDurMs)
+{
+    const auto local  = bodyWindowForDuration(localDurMs);
+    const auto remote = bodyWindowForDuration(remoteDurMs);
+    const double aSpan = double(local.second  - local.first);
+    const double bSpan = double(remote.second - remote.first);
+    AffineTimeMap m;
+    if (bSpan <= 0.0 || aSpan <= 0.0) {
+        m.scale    = 1.0;
+        m.offsetMs = 0;
+        return m;
+    }
+    m.scale    = aSpan / bSpan;
+    m.offsetMs = qint64(double(local.first) - double(remote.first) * m.scale);
+    return m;
+}
+
+MatchVerdict matchFingerprints(const FilmFingerprint& localA,
+                               const FilmFingerprint& remoteB,
+                               double matchThreshold)
 {
     MatchVerdict v;
-    v.totalAnchors = std::min(a.anchors.size(), b.anchors.size());
-    if (!a.isValid() || !b.isValid()) return v;
+    v.totalAnchors = std::min(localA.anchors.size(), remoteB.anchors.size());
+    if (!localA.isValid() || !remoteB.isValid()) return v;
 
-    const auto pairs = matchAnchors(a, b, maxHamming);
-    v.matchedAnchors = pairs.size();
-    if (pairs.size() < minMatches) return v;
+    if (!localA.digest.isEmpty() && localA.digest == remoteB.digest) {
+        v.isSameFilm     = true;
+        v.matchedAnchors = v.totalAnchors;
+        v.alignment      = alignmentFromDurations(localA.durationMs, remoteB.durationMs);
+        return v;
+    }
 
-    auto fit = fitAffine(pairs, a, b, minMatches, toleranceMs);
-    if (!fit) return v;
+    const auto matches = matchAnchors(localA, remoteB);
+    v.matchedAnchors = matches.size();
+    const int needed = std::max(20, int(matchThreshold * double(v.totalAnchors)));
+    if (matches.size() < needed) return v;
 
     v.isSameFilm = true;
-    v.alignment  = fit;
+    v.alignment  = alignmentFromDurations(localA.durationMs, remoteB.durationMs);
     return v;
 }
 

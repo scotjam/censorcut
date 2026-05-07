@@ -7,37 +7,27 @@ using namespace censorcut;
 
 namespace {
 
-FingerprintAnchor anchor(qint64 tMs, const QString& sig)
+FingerprintAnchor anchor(double tau, const QString& phash)
 {
     FingerprintAnchor a;
-    a.tMs      = tMs;
-    a.peakLufs = -10.0;
-    a.sig      = sig;
+    a.tau   = tau;
+    a.phash = phash;
     return a;
 }
-FingerprintAnchor anchor(qint64 tMs, const char* sig)
+FingerprintAnchor anchor(double tau, const char* phash)
 {
-    return anchor(tMs, QString::fromLatin1(sig));
+    return anchor(tau, QString::fromLatin1(phash));
 }
 
 FilmFingerprint fp(qint64 durationMs,
+                   const QString& digest,
                    std::initializer_list<FingerprintAnchor> anchors)
 {
     FilmFingerprint f;
     f.durationMs = durationMs;
+    f.digest     = digest;
     for (const auto& a : anchors) f.anchors.append(a);
     return f;
-}
-
-/// Toggle one bit in a hex sig so we can simulate a small acoustic
-/// drift (a different mastering pass of the same film).
-QString flipOneBit(const QString& sig, int bitIndex)
-{
-    bool ok = false;
-    quint64 v = sig.toULongLong(&ok, 16);
-    Q_ASSERT(ok);
-    v ^= (1ULL << (63 - bitIndex));
-    return QStringLiteral("%1").arg(v, 16, 16, QLatin1Char('0'));
 }
 
 } // namespace
@@ -45,140 +35,178 @@ QString flipOneBit(const QString& sig, int bitIndex)
 class TestFingerprintMatcher : public QObject {
     Q_OBJECT
 private slots:
-    void hammingDistanceBasics();
-    void matchesIdenticalFingerprint();
-    void matchesAcrossDifferentIntroLengths();
-    void matchesAcrossPalNtscSpeedup();
-    void rejectsCompletelyDifferentFilm();
-    void rejectsPartialOverlap();
-    void mapTimeAppliesAffine();
+
+    // -------- hexHammingDistance --------
+
+    void hammingZero()
+    {
+        QCOMPARE(hexHammingDistance(QStringLiteral("0123456789abcdef"),
+                                    QStringLiteral("0123456789abcdef")), 0);
+    }
+
+    void hammingAllBits()
+    {
+        QCOMPARE(hexHammingDistance(QStringLiteral("ffffffffffffffff"),
+                                    QStringLiteral("0000000000000000")), 64);
+    }
+
+    void hammingShapeFailure()
+    {
+        // Different length → max distance.
+        QCOMPARE(hexHammingDistance(QStringLiteral("abc"),
+                                    QStringLiteral("0000000000000000")), 64);
+    }
+
+    void hammingNonHex()
+    {
+        // Non-hex char → max distance.
+        QCOMPARE(hexHammingDistance(QStringLiteral("zzzzzzzzzzzzzzzz"),
+                                    QStringLiteral("0000000000000000")), 64);
+    }
+
+    // -------- bodyWindowForDuration --------
+
+    void bodyWindowFullLengthFilm()
+    {
+        const auto bw = bodyWindowForDuration(90LL * 60 * 1000);
+        QCOMPARE(bw.first,  10LL * 60 * 1000);
+        QCOMPARE(bw.second, 80LL * 60 * 1000);
+    }
+
+    void bodyWindowShortFilm()
+    {
+        // 12 min / 3 = 4 min cushion.
+        const auto bw = bodyWindowForDuration(12LL * 60 * 1000);
+        QCOMPARE(bw.first,   4LL * 60 * 1000);
+        QCOMPARE(bw.second,  8LL * 60 * 1000);
+    }
+
+    // -------- alignmentFromDurations --------
+
+    void alignmentEqualDurations()
+    {
+        const auto m = alignmentFromDurations(90LL * 60 * 1000,
+                                              90LL * 60 * 1000);
+        QCOMPARE(m.scale, 1.0);
+        QCOMPARE(m.offsetMs, qint64(0));
+    }
+
+    void alignmentPalSpeedup()
+    {
+        // 24p original at 90 min vs PAL-sped-up at ~86.4 min.
+        // Both >= 30 min → cushions are 10 min on each side.
+        // Local body span = 70 min. Remote body span = 66.4 min.
+        // Mapping remote_t to local_t: scale = 70/66.4 ≈ 1.054
+        // offset = 10*60_000 - 10*60_000 * 1.054
+        //        = 10*60_000 * (1 - 1.054) ≈ -32530 ms
+        const qint64 local24p = 90LL * 60 * 1000;        // 5,400,000
+        const qint64 remotePAL = qint64(local24p * 24.0 / 25.0); // 5,184,000
+        const auto m = alignmentFromDurations(local24p, remotePAL);
+        const double expectedScale = double(70 * 60 * 1000) / double(remotePAL - 20*60*1000);
+        QVERIFY(qAbs(m.scale - expectedScale) < 1e-6);
+        // map remote midpoint (PAL: 43.2 min) onto local timeline.
+        const qint64 mid_remote = remotePAL / 2;
+        const qint64 mapped = mapTime(m, mid_remote);
+        // Should land somewhere near the local midpoint (45 min).
+        QVERIFY2(qAbs(mapped - local24p / 2) < 60'000,
+                 qPrintable(QStringLiteral("expected ~45min, got %1").arg(mapped)));
+    }
+
+    // -------- matchAnchors --------
+
+    void matchExactTauAndPhash()
+    {
+        FilmFingerprint a = fp(60'000, "digest-a", {
+            anchor(0.10, "0000000000000000"),
+            anchor(0.50, "ffffffffffffffff"),
+            anchor(0.90, "1234567890abcdef"),
+        });
+        FilmFingerprint b = a;  // identical
+        const auto m = matchAnchors(a, b);
+        QCOMPARE(m.size(), 3);
+    }
+
+    void matchToleratesPhashJitter()
+    {
+        // pHash differs by a few bits — within the maxHamming default (8).
+        FilmFingerprint a = fp(60'000, "digest-a", {
+            anchor(0.10, "0000000000000000"),
+        });
+        FilmFingerprint b = fp(60'000, "digest-b", {
+            anchor(0.10, "0000000000000003"),  // 2 bits different
+        });
+        const auto m = matchAnchors(a, b);
+        QCOMPARE(m.size(), 1);
+        QCOMPARE(m.first().hammingDist, 2);
+    }
+
+    void matchRejectsDistantTau()
+    {
+        FilmFingerprint a = fp(60'000, "a", {
+            anchor(0.10, "0000000000000000"),
+        });
+        FilmFingerprint b = fp(60'000, "b", {
+            anchor(0.50, "0000000000000000"),  // tau too different
+        });
+        const auto m = matchAnchors(a, b);
+        QCOMPARE(m.size(), 0);
+    }
+
+    // -------- matchFingerprints --------
+
+    void matchByDigestEquality()
+    {
+        FilmFingerprint a = fp(60'000, "shared-digest", {
+            anchor(0.10, "0000000000000000"),
+            anchor(0.90, "ffffffffffffffff"),
+        });
+        FilmFingerprint b = fp(57'600, "shared-digest", { /* anchors empty
+            on remote side — server may strip them; digest is enough */
+            anchor(0.10, "0000000000000000"),
+            anchor(0.90, "ffffffffffffffff"),
+        });
+        const auto v = matchFingerprints(a, b);
+        QVERIFY(v.isSameFilm);
+        QVERIFY(v.alignment.has_value());
+    }
+
+    void matchByAnchorsWhenDigestsDiffer()
+    {
+        // Build a 25-anchor fingerprint pair — different digests but
+        // anchors agree on tau + pHash.
+        FilmFingerprint a, b;
+        a.durationMs = 60'000;
+        b.durationMs = 60'000;
+        a.digest = QStringLiteral("aaaa");
+        b.digest = QStringLiteral("bbbb");
+        for (int i = 0; i < 25; ++i) {
+            const double tau = 0.02 + 0.04 * i;
+            const QString hash = QString::fromLatin1("0000000000000000");
+            a.anchors.append(anchor(tau, hash));
+            b.anchors.append(anchor(tau, hash));
+        }
+        const auto v = matchFingerprints(a, b);
+        QVERIFY(v.isSameFilm);
+        QCOMPARE(v.matchedAnchors, 25);
+    }
+
+    void rejectsDifferentFilms()
+    {
+        // Different tau patterns, different digests.
+        FilmFingerprint a = fp(60'000, "x", {
+            anchor(0.10, "0000000000000000"),
+            anchor(0.50, "ffffffffffffffff"),
+            anchor(0.90, "1234567890abcdef"),
+        });
+        FilmFingerprint b = fp(60'000, "y", {
+            anchor(0.20, "0000000000000000"),
+            anchor(0.60, "ffffffffffffffff"),
+            anchor(0.95, "1234567890abcdef"),
+        });
+        const auto v = matchFingerprints(a, b);
+        QVERIFY(!v.isSameFilm);
+    }
 };
 
-void TestFingerprintMatcher::hammingDistanceBasics()
-{
-    QCOMPARE(hexHammingDistance("0000000000000000", "0000000000000000"), 0);
-    QCOMPARE(hexHammingDistance("0000000000000000", "0000000000000001"), 1);
-    QCOMPARE(hexHammingDistance("ffffffffffffffff", "0000000000000000"), 64);
-    // Bad inputs return sentinel 64.
-    QCOMPARE(hexHammingDistance("not hex",          "0000000000000000"), 64);
-    QCOMPARE(hexHammingDistance("0000000000000000", "tooshort"),         64);
-}
-
-void TestFingerprintMatcher::matchesIdenticalFingerprint()
-{
-    const auto a = fp(90 * 60'000, {
-        anchor(10 * 60'000, "1111aaaa00001111"),
-        anchor(20 * 60'000, "2222bbbb00002222"),
-        anchor(70 * 60'000, "3333cccc00003333"),
-        anchor(85 * 60'000, "4444dddd00004444"),
-    });
-    const auto v = matchFingerprints(a, a);
-    QVERIFY(v.isSameFilm);
-    QCOMPARE(v.matchedAnchors, 4);
-    QVERIFY(v.alignment.has_value());
-    QCOMPARE(v.alignment->offsetMs, qint64{0});
-    QVERIFY(qFuzzyCompare(v.alignment->scale, 1.0));
-}
-
-void TestFingerprintMatcher::matchesAcrossDifferentIntroLengths()
-{
-    // File b is the same film with a 30 s longer intro: every anchor
-    // shifts by +30000 ms, sigs identical apart from a 1-bit jitter.
-    const auto a = fp(90 * 60'000, {
-        anchor(10 * 60'000, "1111aaaa00001111"),
-        anchor(20 * 60'000, "2222bbbb00002222"),
-        anchor(70 * 60'000, "3333cccc00003333"),
-        anchor(85 * 60'000, "4444dddd00004444"),
-    });
-    const auto b = fp(90 * 60'000 + 30'000, {
-        anchor(10 * 60'000 + 30'000, flipOneBit("1111aaaa00001111", 5)),
-        anchor(20 * 60'000 + 30'000, flipOneBit("2222bbbb00002222", 17)),
-        anchor(70 * 60'000 + 30'000, flipOneBit("3333cccc00003333", 33)),
-        anchor(85 * 60'000 + 30'000, flipOneBit("4444dddd00004444", 50)),
-    });
-    const auto v = matchFingerprints(a, b);
-    QVERIFY(v.isSameFilm);
-    QCOMPARE(v.matchedAnchors, 4);
-    QVERIFY(v.alignment.has_value());
-    // Mapping a remote time at 10:30 should land us at our 10:00 mark.
-    const qint64 mapped = mapTime(*v.alignment, 10 * 60'000 + 30'000);
-    QVERIFY(std::llabs(mapped - 10 * 60'000) < 100);
-}
-
-void TestFingerprintMatcher::matchesAcrossPalNtscSpeedup()
-{
-    // Same film but the remote copy runs ~4% faster (PAL speedup vs.
-    // NTSC). Anchor times scale by 0.96; sigs unchanged.
-    const auto a = fp(90 * 60'000, {
-        anchor(10 * 60'000, "1111aaaa00001111"),
-        anchor(20 * 60'000, "2222bbbb00002222"),
-        anchor(70 * 60'000, "3333cccc00003333"),
-        anchor(85 * 60'000, "4444dddd00004444"),
-    });
-    auto scaledB = a;
-    for (auto& an : scaledB.anchors) an.tMs = qint64(an.tMs * 0.96);
-    scaledB.durationMs = qint64(scaledB.durationMs * 0.96);
-
-    const auto v = matchFingerprints(a, scaledB);
-    QVERIFY(v.isSameFilm);
-    QCOMPARE(v.matchedAnchors, 4);
-    QVERIFY(v.alignment.has_value());
-    // Scale should land in the PAL/NTSC band.
-    QVERIFY(v.alignment->scale > 1.03 && v.alignment->scale < 1.05);
-    // Mapping the remote 10:00 anchor (times 0.96) back gets us to 10:00.
-    const qint64 mapped = mapTime(*v.alignment, qint64(10 * 60'000 * 0.96));
-    QVERIFY(std::llabs(mapped - 10 * 60'000) < 800);
-}
-
-void TestFingerprintMatcher::rejectsCompletelyDifferentFilm()
-{
-    const auto a = fp(90 * 60'000, {
-        anchor(10 * 60'000, "1111aaaa00001111"),
-        anchor(20 * 60'000, "2222bbbb00002222"),
-        anchor(70 * 60'000, "3333cccc00003333"),
-        anchor(85 * 60'000, "4444dddd00004444"),
-    });
-    // All sigs unrelated.
-    const auto b = fp(110 * 60'000, {
-        anchor(8  * 60'000, "ffffffff77777777"),
-        anchor(40 * 60'000, "ee0000ee5555aaaa"),
-        anchor(80 * 60'000, "1234567890abcdef"),
-        anchor(105 * 60'000, "abcdef0123456789"),
-    });
-    const auto v = matchFingerprints(a, b);
-    QVERIFY(!v.isSameFilm);
-    QVERIFY(v.matchedAnchors < 3);
-    QVERIFY(!v.alignment.has_value());
-}
-
-void TestFingerprintMatcher::rejectsPartialOverlap()
-{
-    // Two anchors match (a single mastering tweak) but the other two
-    // don't and the surviving pairs aren't enough for a fit.
-    const auto a = fp(90 * 60'000, {
-        anchor(10 * 60'000, "1111aaaa00001111"),
-        anchor(20 * 60'000, "2222bbbb00002222"),
-        anchor(70 * 60'000, "3333cccc00003333"),
-        anchor(85 * 60'000, "4444dddd00004444"),
-    });
-    const auto b = fp(90 * 60'000, {
-        anchor(10 * 60'000, "1111aaaa00001111"),  // matches
-        anchor(20 * 60'000, "2222bbbb00002222"),  // matches
-        anchor(70 * 60'000, "fedcba9876543210"),  // unrelated
-        anchor(85 * 60'000, "0123456789abcdef"),  // unrelated
-    });
-    const auto v = matchFingerprints(a, b, /*maxHamming=*/8,
-                                     /*minMatches=*/3);
-    QVERIFY(!v.isSameFilm);
-}
-
-void TestFingerprintMatcher::mapTimeAppliesAffine()
-{
-    AffineTimeMap m{ /*scale=*/1.0, /*offsetMs=*/-2500 };
-    QCOMPARE(mapTime(m, 10000), qint64{7500});
-    AffineTimeMap m2{ 0.96, 1000 };
-    QCOMPARE(mapTime(m2, 1000), qint64{1960});
-}
-
-QTEST_MAIN(TestFingerprintMatcher)
+QTEST_APPLESS_MAIN(TestFingerprintMatcher)
 #include "test_fingerprint_matcher.moc"

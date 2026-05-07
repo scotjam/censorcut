@@ -567,7 +567,8 @@ void MainWindow::onSetEditsServerUrl()
 
 void MainWindow::onPullEditsFromServer()
 {
-    const FilmFingerprint fp = m_analyzer ? m_analyzer->latestFingerprint() : FilmFingerprint{};
+    const FilmFingerprint fp = m_analyzer ? m_analyzer->latestFingerprint()
+                                          : FilmFingerprint{};
     if (!fp.isValid()) {
         QMessageBox::information(this, tr("No fingerprint"),
             tr("Run analysis on the current movie first — the edits server is "

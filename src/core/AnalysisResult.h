@@ -49,22 +49,27 @@ struct FrameEmbedding {
     QVector<float>  vec;  // typically 768 or 1024 floats
 };
 
-/// One anchor inside an audio fingerprint: a loud non-voice peak time
-/// plus its 64-bit spectral signature (16 hex chars).
+/// One anchor of the (scene-cut + pHash) video fingerprint. tau is
+/// normalized to [0, 1] over the body window so the fingerprint is
+/// scale-invariant (PAL/NTSC/24p/30p collapse to the same digest).
 struct FingerprintAnchor {
-    qint64  tMs       = 0;
-    double  peakLufs  = 0.0;
-    QString sig;       // 16-char hex; "0000000000000000" if no signature
+    double  tau   = 0.0;
+    QString phash;     // 16-char hex (64 bits)
 };
 
-/// Content-derived film identifier built from 4 audio anchors. Two
-/// fingerprints can be compared (FilmFingerprint::matches) to decide
-/// whether two files contain the same film and at what time offset.
+/// Scene-cut + pHash video fingerprint. Primary content identifier —
+/// robust to codec, resolution, dub, remaster, intro/outro trim, and
+/// global time-scaling. Different cuts of the same film (theatrical
+/// vs director's vs TV) produce different digests by design.
 struct FilmFingerprint {
-    qint64                       durationMs = 0;
-    QString                      digest;   // sha256 of all 4 sig values
+    int                          version           = 1;
+    qint64                       durationMs        = 0;
+    int                          approxDurationMin = 0;
+    QString                      digest;
     QList<FingerprintAnchor>     anchors;
-    [[nodiscard]] bool isValid() const { return !anchors.isEmpty(); }
+    [[nodiscard]] bool isValid() const {
+        return !digest.isEmpty() && !anchors.isEmpty();
+    }
 };
 
 /// Result of running the analyzer over a source video. Per-second raw

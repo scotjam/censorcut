@@ -84,6 +84,19 @@ struct Cli {
     #[arg(long, default_value_os_t = default_identity_path())]
     identity: PathBuf,
 
+    /// Outbound endorsement entries written by the C++ TrustLedger.
+    /// One JSON object per line: {"target":"<pubkey-hex>","score":<f>}.
+    /// Polled by the gossip transport; changes trigger a daily-bundled
+    /// broadcast.
+    #[arg(long, default_value_os_t = default_outbound_endorsements_path())]
+    outbound_endorsements: PathBuf,
+
+    /// Inbound endorsements file written by this sidecar (StoredEndorsement
+    /// rows, deduplicated per-peer-per-day). The C++ TrustLedger reads
+    /// this on launch to populate the bootstrap graph.
+    #[arg(long, default_value_os_t = default_endorsements_in_path())]
+    endorsements_in: PathBuf,
+
     #[command(subcommand)]
     command: Cmd,
 }
@@ -154,6 +167,22 @@ fn default_identity_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     home.join(".censorcut").join("identity.key")
+}
+
+fn default_outbound_endorsements_path() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".censorcut").join("outbound_endorsements.jsonl")
+}
+
+fn default_endorsements_in_path() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".censorcut").join("endorsements.jsonl")
 }
 
 fn load_schema_cfg(extra_file: Option<&PathBuf>) -> Result<SchemaConfig> {
@@ -279,10 +308,12 @@ async fn main() -> Result<()> {
 
         Cmd::Gossip { bootstrap } => {
             let opts = network::GossipOptions {
-                identity_path: cli.identity.clone(),
-                feedback_path: cli.feedback.clone(),
-                peers_path:    cli.peers.clone(),
-                proposed_path: cli.proposed.clone(),
+                identity_path:              cli.identity.clone(),
+                feedback_path:              cli.feedback.clone(),
+                peers_path:                 cli.peers.clone(),
+                proposed_path:              cli.proposed.clone(),
+                outbound_endorsements_path: cli.outbound_endorsements.clone(),
+                endorsements_in_path:       cli.endorsements_in.clone(),
                 bootstrap,
                 limits,
                 schema_cfg,

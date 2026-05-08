@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use chrono::{Datelike, Utc};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
@@ -25,6 +26,7 @@ use iroh_gossip::{
 };
 
 use crate::crypto::Identity;
+use crate::endorse::{self, EndorsementBatch, EndorsementEntry, EndorsementSink};
 use crate::sink::PeerSink;
 use crate::wire;
 
@@ -37,6 +39,11 @@ fn topic_id() -> TopicId {
     h.update(TOPIC_LABEL.as_bytes());
     let bytes: [u8; 32] = h.finalize().into();
     TopicId::from_bytes(bytes)
+}
+
+fn today_yyyymmdd() -> u32 {
+    let now = Utc::now();
+    (now.year() as u32) * 10000 + now.month() * 100 + now.day()
 }
 
 /// Parse a `<NodeId>` or `<NodeId>@<host:port>` bootstrap entry. Iroh's
@@ -53,13 +60,20 @@ fn parse_bootstrap(spec: &str) -> Result<NodeAddr> {
 }
 
 pub struct GossipOptions {
-    pub identity_path:   std::path::PathBuf,
-    pub feedback_path:   std::path::PathBuf,
-    pub peers_path:      std::path::PathBuf,
-    pub proposed_path:   std::path::PathBuf,
-    pub bootstrap:       Vec<String>,
-    pub limits:          crate::sink::SinkLimits,
-    pub schema_cfg:      crate::schema::SchemaConfig,
+    pub identity_path:                std::path::PathBuf,
+    pub feedback_path:                std::path::PathBuf,
+    pub peers_path:                   std::path::PathBuf,
+    pub proposed_path:                std::path::PathBuf,
+    /// Outbound endorsement entries written by the C++ TrustLedger.
+    /// Each line is `{"target":"<pubkey-hex>","score":<float>}`. The
+    /// broadcaster bundles them into a daily EndorsementBatch.
+    pub outbound_endorsements_path:   std::path::PathBuf,
+    /// Inbound endorsements file written by this sidecar; the C++
+    /// TrustLedger reads it on launch to populate the bootstrap graph.
+    pub endorsements_in_path:         std::path::PathBuf,
+    pub bootstrap:                    Vec<String>,
+    pub limits:                       crate::sink::SinkLimits,
+    pub schema_cfg:                   crate::schema::SchemaConfig,
 }
 
 /// Run the gossip transport until the shutdown signal fires. Spawns:
@@ -100,14 +114,24 @@ pub async fn run(opts: GossipOptions) -> Result<()> {
     let topic_sub = gossip.subscribe(topic, bootstrap_nodes)
         .await
         .context("subscribe to gossip topic")?;
-    let (mut sender, mut receiver) = topic_sub.split();
+    let (sender, mut receiver) = topic_sub.split();
+    // Wrap the sender in an Arc<Mutex<>> so the feedback and
+    // endorsement broadcaster tasks can share it without contending
+    // ownership. Lock duration is microseconds — neither task starves
+    // the other.
+    let sender = Arc::new(Mutex::new(sender));
 
     let sink = Arc::new(Mutex::new(PeerSink::open_with_proposed(
         &opts.peers_path, Some(&opts.proposed_path),
         opts.limits, opts.schema_cfg)?));
 
+    let endorse_sink = Arc::new(Mutex::new(
+        EndorsementSink::open(&opts.endorsements_in_path)
+            .context("opening endorsements inbound sink")?));
+
     // Receive task ------------------------------------------------------
     let recv_sink = sink.clone();
+    let recv_endorse = endorse_sink.clone();
     let recv_handle = tokio::spawn(async move {
         loop {
             let evt = match receiver.try_next().await {
@@ -122,9 +146,33 @@ pub async fn run(opts: GossipOptions) -> Result<()> {
                         Err(_) => continue,
                     };
                     match wire::open(line) {
-                        Ok((row_json, peer_key)) => {
+                        Ok((inner_json, peer_key)) => {
+                            // Discriminator: endorsement batches carry
+                            // `"kind":"endorsements"`; feedback rows do
+                            // not. The substring check is cheap and
+                            // unambiguous because feedback rows have
+                            // no `kind` field per the schema.
+                            if inner_json.contains(r#""kind":"endorsements""#) {
+                                match endorse::validate_endorsement_shape(&inner_json) {
+                                    Ok(batch) => {
+                                        let mut e = recv_endorse.lock().await;
+                                        if let Err(err) = e.put(&peer_key, batch) {
+                                            eprintln!("gossip: endorsement sink rejected: {err}");
+                                        } else if let Err(err) = e.flush() {
+                                            eprintln!("gossip: endorsement flush failed: {err}");
+                                        } else {
+                                            eprintln!(
+                                                "gossip: accepted endorsement batch from peer {}…",
+                                                &peer_key[..16.min(peer_key.len())]);
+                                        }
+                                    }
+                                    Err(err) => eprintln!(
+                                        "gossip: endorsement rejected: {err}"),
+                                }
+                                continue;
+                            }
                             let mut s = recv_sink.lock().await;
-                            match s.try_accept(&row_json, &peer_key) {
+                            match s.try_accept(&inner_json, &peer_key) {
                                 Ok(stored) => eprintln!(
                                     "gossip: accepted fp={} from peer {}…",
                                     &stored.fingerprint[..12],
@@ -156,6 +204,7 @@ pub async fn run(opts: GossipOptions) -> Result<()> {
     // milliseconds.
     let bc_id = id.clone();
     let bc_path = opts.feedback_path.clone();
+    let bc_sender = sender.clone();
     let bc_handle = tokio::spawn(async move {
         let mut last_len: u64 = 0;
         loop {
@@ -182,9 +231,87 @@ pub async fn run(opts: GossipOptions) -> Result<()> {
                     Ok(s)  => s,
                     Err(_) => continue,
                 };
-                if let Err(e) = sender.broadcast(serialized.into_bytes().into()).await {
+                let mut s = bc_sender.lock().await;
+                if let Err(e) = s.broadcast(serialized.into_bytes().into()).await {
                     eprintln!("gossip: broadcast error: {e}");
                 }
+            }
+        }
+    });
+
+    // Endorsement broadcaster --------------------------------------------
+    // Polls outbound_endorsements.jsonl (one {target, score} JSON per line,
+    // written by the C++ TrustLedger). On startup or whenever the file's
+    // content hash changes, bundles entries into a daily EndorsementBatch,
+    // signs, and broadcasts.
+    let eb_id      = id.clone();
+    let eb_path    = opts.outbound_endorsements_path.clone();
+    let eb_sender  = sender.clone();
+    let eb_handle  = tokio::spawn(async move {
+        let mut last_hash: u64 = 0;
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let bytes = match tokio::fs::read(&eb_path).await {
+                Ok(b)  => b,
+                Err(_) => continue,  // file doesn't exist yet
+            };
+            // Rolling Fletcher-style hash to detect content change without
+            // pulling in a hashing dep that's not already available
+            // through serde / sha2.
+            let mut h: u64 = 0xcbf29ce484222325;
+            for &b in &bytes {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            if h == last_hash { continue; }
+            last_hash = h;
+
+            // Parse outbound entries.
+            let text = match std::str::from_utf8(&bytes) {
+                Ok(s)  => s,
+                Err(_) => continue,
+            };
+            let mut entries = Vec::<EndorsementEntry>::new();
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() { continue; }
+                let parsed: Result<serde_json::Value, _> = serde_json::from_str(line);
+                if let Ok(v) = parsed {
+                    let target = v.get("target").and_then(|x| x.as_str()).unwrap_or("");
+                    let score  = v.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                    if !target.is_empty() {
+                        entries.push(EndorsementEntry {
+                            target: target.to_string(),
+                            score:  score as f32,
+                        });
+                    }
+                }
+                if entries.len() >= endorse::MAX_ENTRIES_PER_BATCH { break; }
+            }
+            if entries.is_empty() { continue; }
+
+            let day_utc = today_yyyymmdd();
+            let batch = EndorsementBatch {
+                schema:  1,
+                kind:    "endorsements".to_string(),
+                day_utc,
+                entries,
+            };
+            let raw = match serde_json::to_string(&batch) {
+                Ok(s)  => s,
+                Err(_) => continue,
+            };
+            let env = wire::seal(&raw, &eb_id);
+            let serialized = match wire::to_line(&env) {
+                Ok(s)  => s,
+                Err(_) => continue,
+            };
+            let mut s = eb_sender.lock().await;
+            if let Err(e) = s.broadcast(serialized.into_bytes().into()).await {
+                eprintln!("gossip: endorsement broadcast error: {e}");
+            } else {
+                eprintln!("gossip: broadcast endorsement batch ({} entries, day {})",
+                          batch.entries.len(), day_utc);
             }
         }
     });
@@ -194,6 +321,7 @@ pub async fn run(opts: GossipOptions) -> Result<()> {
     eprintln!("censorcut-sync: shutting down");
     recv_handle.abort();
     bc_handle.abort();
+    eb_handle.abort();
     Ok(())
 }
 

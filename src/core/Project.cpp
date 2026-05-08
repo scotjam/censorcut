@@ -1,9 +1,11 @@
 #include "Project.h"
 
 #include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
+#include <QStandardPaths>
 #include <QTextStream>
 
 #include <nlohmann/json.hpp>
@@ -43,6 +45,25 @@ void from_json_export(const nlohmann::json& j, ExportSettings& e)
 QString Project::sidecarPathFor(const QString& moviePath)
 {
     return moviePath + QStringLiteral(".censorcut.json");
+}
+
+QString Project::sidecarFallbackPathFor(const QString& moviePath)
+{
+    // Hash the absolute movie path so two movies with the same filename
+    // in different folders / shares don't collide in the fallback dir.
+    const QString abs = QFileInfo(moviePath).absoluteFilePath();
+    const QByteArray hash = QCryptographicHash::hash(
+        abs.toUtf8(), QCryptographicHash::Sha256).toHex().left(16);
+    const QString appData = QStandardPaths::writableLocation(
+        QStandardPaths::AppDataLocation);
+    return QDir::cleanPath(
+        appData + QStringLiteral("/sidecars/") + QString::fromLatin1(hash)
+        + QStringLiteral(".censorcut.json"));
+}
+
+QStringList Project::sidecarLoadCandidatesFor(const QString& moviePath)
+{
+    return { sidecarPathFor(moviePath), sidecarFallbackPathFor(moviePath) };
 }
 
 QString Project::censoredOutputPathFor(const QString& moviePath, int age)
@@ -177,6 +198,35 @@ bool Project::saveToSidecar(const QString& sidecarPath, QString* errorOut) const
         return false;
     }
     return true;
+}
+
+QString Project::saveToBestSidecarPathFor(const QString& moviePath,
+                                          bool* usedFallbackOut,
+                                          QString* errorOut) const
+{
+    if (usedFallbackOut) *usedFallbackOut = false;
+    const QString primary = sidecarPathFor(moviePath);
+    QString primaryErr;
+    if (saveToSidecar(primary, &primaryErr)) {
+        return primary;
+    }
+    // Primary failed — typically because the movie is on a read-only
+    // network share / mounted ISO / optical media. Fall back to AppData.
+    const QString fallback = sidecarFallbackPathFor(moviePath);
+    QDir().mkpath(QFileInfo(fallback).path());
+    QString fallbackErr;
+    if (saveToSidecar(fallback, &fallbackErr)) {
+        if (usedFallbackOut) *usedFallbackOut = true;
+        return fallback;
+    }
+    if (errorOut) {
+        *errorOut = QStringLiteral(
+            "Could not save sidecar to either location.\n"
+            "  Primary (%1): %2\n"
+            "  Fallback (%3): %4")
+            .arg(primary, primaryErr, fallback, fallbackErr);
+    }
+    return QString();
 }
 
 } // namespace censorcut

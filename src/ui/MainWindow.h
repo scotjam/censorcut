@@ -40,6 +40,7 @@ private slots:
     void onForgetFeedback();
     void onSetEditsServerUrl();
     void onPullEditsFromServer();
+    void onFingerprintAvailable(const QString& digest);
     void onSharingSettings();
     void onReviewProposedCategories();
     void onFeedbackSharingChanged(bool on);
@@ -82,6 +83,7 @@ private:
     TimelineWidget*  m_timeline    = nullptr;
     QListView*       m_markerList  = nullptr;
     QLabel*          m_timeLabel   = nullptr;
+    QLabel*          m_fingerprintLabel = nullptr;
     QPushButton*     m_playButton   = nullptr;
     QCheckBox*       m_previewCheck = nullptr;
     AnalyzerPanel*   m_analyzer     = nullptr;

@@ -44,6 +44,12 @@ public:
     /// path to disable Run.
     void setMovie(const QString& sourcePath, qint64 durationMs);
 
+    /// Kick off a fast fingerprint-only analysis (skips CLIP / Whisper /
+    /// loudness — just the scene-cut + pHash video fingerprint). Used to
+    /// identify a movie immediately on open. The resulting fingerprint
+    /// becomes available via latestFingerprint().
+    bool runFingerprintOnly();
+
     /// The most recent analysis result's fingerprint (empty if no run
     /// yet). Used by the Pull-edits-server flow as the lookup key.
     FilmFingerprint latestFingerprint() const { return m_latestFingerprint; }
@@ -55,6 +61,9 @@ public:
 
 signals:
     void ageChanged(int age);
+    /// Fires after every analysis run (full or fingerprint-only) once
+    /// the result is available — listeners can read latestFingerprint().
+    void fingerprintAvailable(const QString& digest);
 
 private slots:
     void onRunClicked();

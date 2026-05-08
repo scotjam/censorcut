@@ -30,9 +30,21 @@ struct Project {
     AgeProfile          activeProfile = AgeProfile::forAge(8);
     int                 schemaVersion = kSchemaVersion;
 
-    /// Compute the path of the sidecar JSON for a given movie.
+    /// Compute the primary path of the sidecar JSON for a given movie.
     /// Returns "<movie>.censorcut.json" alongside the movie.
     static QString sidecarPathFor(const QString& moviePath);
+
+    /// Compute the fallback sidecar path under QStandardPaths::AppDataLocation
+    /// when the primary location is read-only — typical for movies on
+    /// network shares, optical media, or mounted ISOs. Two movies with the
+    /// same filename in different folders don't collide because the
+    /// fallback name is keyed on a hash of the absolute movie path.
+    static QString sidecarFallbackPathFor(const QString& moviePath);
+
+    /// Both candidate sidecar paths in priority order: [primary, fallback].
+    /// Loaders should try them in order; savers should try primary first
+    /// and fall back on permission failure.
+    static QStringList sidecarLoadCandidatesFor(const QString& moviePath);
 
     /// Compute the output path for the censored copy.
     /// Inserts " CENSORED-<age>" before the extension. For example:
@@ -56,6 +68,16 @@ struct Project {
 
     /// Save this project to a sidecar JSON. Returns true on success.
     bool saveToSidecar(const QString& sidecarPath, QString* errorOut = nullptr) const;
+
+    /// Save this project trying the primary sidecar path first, falling
+    /// back to the AppData path if the primary's directory is read-only
+    /// (network share, optical media, etc.). Returns the path the
+    /// project was actually saved to, or empty string on total failure.
+    /// `usedFallbackOut` is set to true when the fallback path was used
+    /// — UI can surface this so the user knows where their cuts went.
+    QString saveToBestSidecarPathFor(const QString& moviePath,
+                                     bool* usedFallbackOut = nullptr,
+                                     QString* errorOut = nullptr) const;
 };
 
 } // namespace censorcut

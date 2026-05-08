@@ -123,6 +123,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="Skip the Whisper dialogue pass even if installed")
     parser.add_argument("--no-fingerprint", action="store_true",
                         help="Skip the scene-cut + pHash video fingerprint pass")
+    parser.add_argument("--fingerprint-only", action="store_true",
+                        help="Compute the video fingerprint and skip every other "
+                             "detector. Useful for fast 'identify-this-movie' on open.")
     parser.add_argument("--threshold-mul", type=float, default=1.0,
                         help="Multiplier on every category's threshold; "
                              "values <1.0 are more sensitive (more suggestions), "
@@ -165,6 +168,40 @@ def main(argv: Optional[List[str]] = None) -> int:
         for cat in categories:
             t = float(cat.get("threshold", 0.5)) * threshold_mul
             cat["threshold"] = max(0.0, min(1.0, t))
+
+    # Fast path: --fingerprint-only short-circuits everything except the
+    # video fingerprint. Used by the editor to identify a movie as soon
+    # as the user opens it, without paying CLIP/Whisper compute.
+    if args.fingerprint_only:
+        emit_progress(0.05, "fingerprint")
+        fp = {"version": 1, "anchors": []}
+        if not args.no_fingerprint:
+            try:
+                from .detectors import video_fingerprint as vfp_mod
+                fp = vfp_mod.run(input_path, duration_ms=duration_ms,
+                                  progress=emit_progress)
+            except Exception as e:
+                print(f"censorcut.analyze: fingerprint pass failed: {e}",
+                      file=sys.stderr)
+        result = {
+            "schemaVersion": 1,
+            "sourceFile":   str(Path(input_path).resolve()),
+            "durationMs":   duration_ms,
+            "yamnetUsed":   False,
+            "clipUsed":     False,
+            "whisperUsed":  False,
+            "thresholdMul": 1.0,
+            "categoryDiagnostics": [],
+            "rawScores":    {},
+            "suggestions":  [],
+            "frameEmbeddings": [],
+            "fingerprint":  fp,
+        }
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        emit_progress(1.0, "done")
+        return 0
 
     # 1) Loudness pass — only if some enabled category references one of
     #    the audio.lufs.* series. Saves ~30 s of ffmpeg ebur128 work when

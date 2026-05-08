@@ -40,6 +40,11 @@ public:
     /// located.
     bool start(const QString& inputPath);
 
+    /// Start a fast fingerprint-only run — skips loudness / YAMNet /
+    /// CLIP / Whisper, computes only the scene-cut + pHash video
+    /// fingerprint. Used to identify a movie immediately on open.
+    bool startFingerprintOnly(const QString& inputPath);
+
     /// Kill the running subprocess. Safe when not running.
     void cancel();
 

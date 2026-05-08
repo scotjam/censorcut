@@ -44,6 +44,14 @@ void AnalyzerPanel::setTrustLedger(TrustLedger* ledger)
     m_trust = ledger;
 }
 
+bool AnalyzerPanel::runFingerprintOnly()
+{
+    if (!m_controller || m_sourcePath.isEmpty()) return false;
+    if (m_controller->isRunning()) return false;
+    setRunning(true);
+    return m_controller->startFingerprintOnly(m_sourcePath);
+}
+
 AnalyzerPanel::AnalyzerPanel(MarkerModel* markers,
                              PlaybackController* playback,
                              FeedbackStore* feedback,
@@ -291,6 +299,8 @@ void AnalyzerPanel::onCompleted(const AnalysisResult& result)
 
     if (m_feedback) m_feedback->setLatestEmbeddings(result.frameEmbeddings);
     m_latestFingerprint = result.fingerprint;
+    if (m_latestFingerprint.isValid())
+        emit fingerprintAvailable(m_latestFingerprint.digest);
 
     int added = 0;
     if (m_markers) {

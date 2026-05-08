@@ -150,6 +150,51 @@ bool AnalysisController::start(const QString& inputPath)
     return true;
 }
 
+bool AnalysisController::startFingerprintOnly(const QString& inputPath)
+{
+    if (isRunning()) return false;
+
+    if (m_pythonPath.isEmpty()) m_pythonPath = locatePython();
+    if (m_pythonPath.isEmpty()) {
+        emit failed(QStringLiteral("Python interpreter not found."));
+        return false;
+    }
+    if (m_packageDir.isEmpty()) m_packageDir = locatePythonPackageDir();
+    if (m_packageDir.isEmpty()) {
+        emit failed(QStringLiteral("Could not find the censorcut analyzer package."));
+        return false;
+    }
+    if (!QFileInfo(inputPath).isFile()) {
+        emit failed(QStringLiteral("Input video not found: %1").arg(inputPath));
+        return false;
+    }
+
+    const QString uniq = QStringLiteral("censorcut_fingerprint_%1.json")
+                             .arg(QDateTime::currentMSecsSinceEpoch());
+    m_outPath = QDir::tempPath() + QLatin1Char('/') + uniq;
+
+    m_stdoutBuf.clear();
+    m_stderrTail.clear();
+    m_cancelled = false;
+
+    QStringList args = {
+        QStringLiteral("-m"), QStringLiteral("censorcut.analyze"),
+        QStringLiteral("--input"), inputPath,
+        QStringLiteral("--out"),   m_outPath,
+        QStringLiteral("--fingerprint-only"),
+    };
+
+    m_proc.setWorkingDirectory(m_packageDir);
+    m_proc.setProgram(m_pythonPath);
+    m_proc.setArguments(args);
+    m_proc.start();
+    if (!m_proc.waitForStarted(5000)) {
+        emit failed(QStringLiteral("python failed to start: %1").arg(m_proc.errorString()));
+        return false;
+    }
+    return true;
+}
+
 void AnalysisController::cancel()
 {
     if (!isRunning()) return;

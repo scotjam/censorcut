@@ -146,6 +146,16 @@ void MainWindow::buildUi()
     m_analyzer = new AnalyzerPanel(m_markers, m_playback.get(), m_feedback, splitter);
     m_analyzer->setTrustLedger(m_trust);
 
+    // Permanent status-bar label that displays the current movie's
+    // fingerprint digest. Updates as soon as the fingerprint-only pass
+    // (kicked off on open) completes.
+    m_fingerprintLabel = new QLabel(this);
+    m_fingerprintLabel->setStyleSheet(
+        QStringLiteral("color:#888; padding:0 8px;"));
+    m_fingerprintLabel->setToolTip(tr("Content fingerprint of the current movie"));
+    m_fingerprintLabel->setText(QString());
+    statusBar()->addPermanentWidget(m_fingerprintLabel);
+
     splitter->addWidget(m_markerList);
     splitter->addWidget(m_analyzer);
     splitter->setStretchFactor(1, 1);
@@ -242,6 +252,9 @@ void MainWindow::connectSignals()
             this, [this]{ m_userScrubbing = true; });
     connect(m_timeline, &TimelineWidget::scrubEnded,
             this, [this]{ m_userScrubbing = false; });
+
+    connect(m_analyzer, &AnalyzerPanel::fingerprintAvailable,
+            this, &MainWindow::onFingerprintAvailable);
 
     connect(m_markerList, &QListView::doubleClicked, this,
             [this](const QModelIndex& ix) {
@@ -368,19 +381,18 @@ bool MainWindow::hasUnsavedChanges() const
 {
     if (m_currentMoviePath.isEmpty()) return false;
 
-    const QString sidecar = Project::sidecarPathFor(m_currentMoviePath);
-    const QString liveFp  = Project::markersFingerprint(m_markers->markers());
+    QString sidecar;
+    for (const QString& candidate : Project::sidecarLoadCandidatesFor(m_currentMoviePath)) {
+        if (QFileInfo::exists(candidate)) { sidecar = candidate; break; }
+    }
+    const QString liveFp = Project::markersFingerprint(m_markers->markers());
 
-    QFileInfo info(sidecar);
-    if (!info.exists()) {
-        // No file yet — empty interface vs no file is "in sync"; any markers
-        // mean unsaved work.
+    if (sidecar.isEmpty()) {
         return !m_markers->markers().isEmpty();
     }
 
     auto loaded = Project::loadFromSidecar(sidecar);
     if (!loaded) {
-        // Couldn't parse what's on disk — be conservative and prompt.
         return true;
     }
     return liveFp != Project::markersFingerprint(loaded->markers);
@@ -405,13 +417,40 @@ void MainWindow::onOpenFile()
     loadProjectFor(path);
     m_analyzer->setMovie(path, m_playback->duration());
     m_playback->play();
+    // Reset the permanent fingerprint label and kick off a
+    // fingerprint-only analysis in the background. Typical wall time
+    // ~30-45 s for 2 hr 1080p H.264 with hardware decode.
+    if (m_fingerprintLabel) {
+        m_fingerprintLabel->setText(tr("Fingerprint: computing…"));
+        m_fingerprintLabel->setToolTip(tr("Computing the scene-cut + pHash fingerprint"));
+    }
+    QMetaObject::invokeMethod(this, [this]() {
+        if (m_analyzer) m_analyzer->runFingerprintOnly();
+    }, Qt::QueuedConnection);
+}
+
+void MainWindow::onFingerprintAvailable(const QString& digest)
+{
+    if (!m_fingerprintLabel) return;
+    if (digest.isEmpty()) {
+        m_fingerprintLabel->setText(tr("Fingerprint: (unavailable)"));
+        m_fingerprintLabel->setToolTip(tr("Fingerprint not yet available"));
+        return;
+    }
+    m_fingerprintLabel->setText(
+        tr("Fingerprint: %1…").arg(digest.left(12)));
+    m_fingerprintLabel->setToolTip(digest);
 }
 
 void MainWindow::loadProjectFor(const QString& moviePath)
 {
-    const QString sidecar = Project::sidecarPathFor(moviePath);
-    QFileInfo sidecarInfo(sidecar);
-    if (!sidecarInfo.exists()) {
+    // Try the next-to-movie sidecar first; if absent, try the AppData
+    // fallback (used when the source folder is read-only).
+    QString sidecar;
+    for (const QString& candidate : Project::sidecarLoadCandidatesFor(moviePath)) {
+        if (QFileInfo::exists(candidate)) { sidecar = candidate; break; }
+    }
+    if (sidecar.isEmpty()) {
         m_markers->clear();
         m_dirty = false;
         updateStatusBar();
@@ -448,16 +487,24 @@ void MainWindow::onSaveSidecar()
     p.markers     = m_markers->markers();
     // ExportSettings and AgeProfile use defaults in M1.
 
-    const QString sidecar = Project::sidecarPathFor(m_currentMoviePath);
+    bool usedFallback = false;
     QString err;
-    if (!p.saveToSidecar(sidecar, &err)) {
+    const QString savedTo = p.saveToBestSidecarPathFor(
+        m_currentMoviePath, &usedFallback, &err);
+    if (savedTo.isEmpty()) {
         QMessageBox::warning(this, QStringLiteral("Save failed"), err);
         return;
     }
     m_dirty = false;
     setWindowModified(false);
     updateStatusBar();
-    statusBar()->showMessage(QStringLiteral("Saved %1").arg(sidecar), 3000);
+    if (usedFallback) {
+        statusBar()->showMessage(
+            tr("Source folder is read-only; saved to AppData: %1").arg(savedTo),
+            6000);
+    } else {
+        statusBar()->showMessage(tr("Saved %1").arg(savedTo), 3000);
+    }
 }
 
 void MainWindow::onExportProject()

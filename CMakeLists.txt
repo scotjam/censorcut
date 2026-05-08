@@ -88,6 +88,8 @@ add_library(censorcut_core STATIC
     src/core/SyncProcess.cpp
     src/core/TrustLedger.h
     src/core/TrustLedger.cpp
+    src/core/SandboxedProcess.h
+    src/core/SandboxedProcess.cpp
 )
 target_include_directories(censorcut_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src

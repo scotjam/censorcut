@@ -11,6 +11,11 @@ namespace censorcut {
 SyncProcess::SyncProcess(QObject* parent)
     : QObject(parent)
 {
+    // censorcut-sync is a small Rust binary doing P2P gossip — ~64 MiB
+    // is more than enough; cap it tightly so a malformed envelope
+    // can't pressure the editor's memory.
+    m_proc.setJobMemoryLimitBytes(256LL * 1024 * 1024);
+
     connect(&m_proc, &QProcess::readyReadStandardOutput,
             this, &SyncProcess::onStdoutReady);
     connect(&m_proc, &QProcess::readyReadStandardError,

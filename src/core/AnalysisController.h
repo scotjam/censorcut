@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AnalysisResult.h"
+#include "SandboxedProcess.h"
 
 #include <QObject>
 #include <QProcess>
@@ -59,7 +60,7 @@ private slots:
 private:
     void parseStdoutLine(const QByteArray& line);
 
-    QProcess   m_proc;
+    SandboxedProcess m_proc;
     QString    m_pythonPath;
     QString    m_packageDir;
     QString    m_outPath;     // where the analyzer writes its JSON

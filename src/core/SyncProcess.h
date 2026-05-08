@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SandboxedProcess.h"
+
 #include <QObject>
 #include <QProcess>
 #include <QString>
@@ -53,7 +55,7 @@ private slots:
     void onErrorOccurred(QProcess::ProcessError error);
 
 private:
-    QProcess m_proc;
+    SandboxedProcess m_proc;
     QString  m_binaryPath;
 };
 

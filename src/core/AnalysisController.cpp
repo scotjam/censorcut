@@ -25,6 +25,11 @@ void appendBounded(QByteArray& tail, const QByteArray& chunk)
 AnalysisController::AnalysisController(QObject* parent)
     : QObject(parent)
 {
+    // CLIP/Whisper models occupy several GiB of RAM during inference.
+    // 12 GiB cap leaves comfortable headroom for normal operation while
+    // still aborting decode bombs that try to balloon allocation.
+    m_proc.setJobMemoryLimitBytes(12LL * 1024 * 1024 * 1024);
+
     connect(&m_proc, &QProcess::readyReadStandardOutput,
             this, &AnalysisController::onStdoutReady);
     connect(&m_proc, &QProcess::readyReadStandardError,

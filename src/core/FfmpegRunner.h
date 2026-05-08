@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SandboxedProcess.h"
+
 #include <QByteArray>
 #include <QObject>
 #include <QProcess>
@@ -69,7 +71,7 @@ private slots:
 private:
     void parseProgressLine(const QByteArray& line);
 
-    QProcess   m_proc;
+    SandboxedProcess m_proc;
     QString    m_ffmpegPath;
     qint64     m_expectedDurationMs = 0;
     QByteArray m_stdoutBuf;

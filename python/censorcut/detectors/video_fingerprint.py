@@ -20,7 +20,7 @@ NOT robust to:
 Algorithm:
   1. ffmpeg pipeline:
        -hwaccel auto
-       -vf "fps=8, scale=32:32, format=gray"
+       -vf "fps=2, scale=32:32, format=gray"
        -f rawvideo
      → 1024 bytes per frame (32*32 grayscale).
 
@@ -28,7 +28,7 @@ Algorithm:
      drop DC → median threshold → 63 bits, pad to 64).
 
   3. Detect cuts: Hamming distance between consecutive pHashes;
-     adaptive threshold over a sliding 30-second median; minimum
+     adaptive threshold over a sliding 90-second median; minimum
      spacing 1 second.
 
   4. Refine each cut to sub-frame time via parabolic interpolation
@@ -63,12 +63,20 @@ from typing import Dict, List, Optional, Tuple
 # Tunables
 # ----------------------------------------------------------------------
 
-SAMPLE_FPS              = 8                  # frame rate for cut detection
+SAMPLE_FPS              = 2                  # frame rate for cut detection
+                                              # (was 8; cuts are 1-frame events
+                                              # producing 25+ bit pHash deltas,
+                                              # detectable at any rate ≥ 2 fps;
+                                              # 4× decode speedup vs 8 fps)
 PHASH_RES               = 32                 # decode each frame to NxN gray
 PHASH_DCT_KEEP          = 8                  # keep top-left 8x8 DCT block
 TOP_K_CUTS              = 100
 MIN_CUT_SPACING_MS      = 1000               # 1 second
-ADAPTIVE_WINDOW_SEC     = 30                 # sliding-median window
+ADAPTIVE_WINDOW_SEC     = 90                 # sliding-median window
+                                              # (was 30; widened to compensate
+                                              # for the 4× lower sample rate so
+                                              # the median still sees ~180
+                                              # samples)
 THRESHOLD_MULTIPLIER    = 4.0                # cut iff hd > median * mul
 TAU_BUCKET              = 0.0005             # ~2.7s at 90min runtime
 PHASH_HEX_CHARS         = 16                 # 64 bits

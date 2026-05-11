@@ -19,20 +19,9 @@ namespace {
 QString labelForRow(const EditsPullDialog* /*unused*/, const EditPack& p,
                     const MatchVerdict& v)
 {
-    QString matchTag;
-    if (v.isSameFilm) {
-        matchTag = QStringLiteral("✓ %1/%2 anchors match")
-                       .arg(v.matchedAnchors).arg(v.totalAnchors);
-        if (v.alignment) {
-            const auto& a = *v.alignment;
-            matchTag += QStringLiteral("  (offset %1 ms, scale %2)")
-                            .arg(a.offsetMs)
-                            .arg(QString::number(a.scale, 'f', 3));
-        }
-    } else {
-        matchTag = QStringLiteral("✗ %1/%2 anchors match")
-                       .arg(v.matchedAnchors).arg(v.totalAnchors);
-    }
+    const QString tick = v.isSameFilm ? QStringLiteral("✓")
+                                          : QStringLiteral("✗");
+    QString matchTag = QStringLiteral("%1 %2").arg(tick).arg(v.reason);
     QString summary = QStringLiteral("%1 cuts  ·  %2  ·  by %3…")
                           .arg(p.cuts.size())
                           .arg(matchTag)
@@ -91,21 +80,17 @@ void EditsPullDialog::start(const QUrl& serverUrl)
         return;
     }
     m_status->setText(tr("Fetching from %1…").arg(serverUrl.toString()));
-    m_client->fetch(serverUrl, m_localFp.digest);
+    m_client->fetch(serverUrl, m_localFp.bucketKey());
 }
 
-void EditsPullDialog::onPacksFetched(const QString& filmFp, const QList<EditPack>& packs)
+void EditsPullDialog::onPacksFetched(const QString& filmId, const QList<EditPack>& packs)
 {
-    Q_UNUSED(filmFp);
+    Q_UNUSED(filmId);
     m_rows.clear();
     m_listWidget->clear();
     int sameFilm = 0;
     for (const EditPack& p : packs) {
-        FilmFingerprint remote;
-        remote.durationMs = 0;
-        remote.digest     = p.filmFp;
-        remote.anchors    = p.filmAnchors;
-        const auto v = matchFingerprints(m_localFp, remote);
+        const auto v = matchFingerprints(m_localFp, p.fingerprint);
         if (v.isSameFilm) ++sameFilm;
         Row row{ p, v };
         const QString label = labelForRow(this, p, v);
@@ -140,15 +125,18 @@ void EditsPullDialog::onApplyClicked()
     const int idx = m_listWidget->currentRow();
     if (idx < 0 || idx >= m_rows.size()) return;
     const Row& row = m_rows.at(idx);
-    if (!row.verdict.isSameFilm || !row.verdict.alignment) return;
+    if (!row.verdict.isSameFilm) return;
     if (!m_markers) return;
 
-    const auto& fit = *row.verdict.alignment;
+    // F and v9 both collapse alignment to a single offset: the pack's
+    // cuts live in the remote timeline; we add estimatedTrimMs to land
+    // in the local timeline.
+    const qint64 trim = row.verdict.estimatedTrimMs;
     int added = 0;
     for (const EditPackCut& c : row.pack.cuts) {
         Marker m;
-        m.startMs    = mapTime(fit, c.startMs);
-        m.endMs      = mapTime(fit, c.endMs);
+        m.startMs    = c.startMs + trim;
+        m.endMs      = c.endMs   + trim;
         if (m.endMs <= m.startMs) continue;
         m.category   = c.category;
         m.source     = Source::Suggested;
@@ -157,10 +145,8 @@ void EditsPullDialog::onApplyClicked()
         QStringList notes;
         notes << tr("from edits server pack");
         if (!c.reason.isEmpty()) notes << c.reason;
-        if (fit.scale != 1.0 || fit.offsetMs != 0) {
-            notes << tr("aligned (offset %1 ms, scale %2)")
-                         .arg(fit.offsetMs)
-                         .arg(QString::number(fit.scale, 'f', 3));
+        if (trim != 0) {
+            notes << tr("aligned (trim %1 ms)").arg(trim);
         }
         m.note = notes.join(QStringLiteral(" · "));
         if (!row.pack.authorPubkey.isEmpty())

@@ -62,8 +62,11 @@ public:
 signals:
     void ageChanged(int age);
     /// Fires after every analysis run (full or fingerprint-only) once
-    /// the result is available — listeners can read latestFingerprint().
-    void fingerprintAvailable(const QString& digest);
+    /// the result is available — listeners can also read latestFingerprint().
+    /// The argument carries the full fingerprint (type, durationMs,
+    /// keyframeTimesMs / peaks); the status bar uses the type + bucket
+    /// key for its display.
+    void fingerprintAvailable(const FilmFingerprint& fp);
 
 private slots:
     void onRunClicked();

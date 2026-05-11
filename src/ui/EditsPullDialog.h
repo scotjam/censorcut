@@ -35,7 +35,7 @@ public:
     void start(const QUrl& serverUrl);
 
 private slots:
-    void onPacksFetched(const QString& filmFp, const QList<EditPack>& packs);
+    void onPacksFetched(const QString& filmId, const QList<EditPack>& packs);
     void onFetchFailed(const QString& reason);
     void onApplyClicked();
     void onSelectionChanged();

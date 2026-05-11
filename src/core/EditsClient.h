@@ -24,10 +24,18 @@ struct EditPackCut {
     QString reason;
 };
 
+/// A pack's embedded fingerprint, used by the receiver to decide whether
+/// the pack's cuts apply to their copy of the film. Carries whichever of
+/// F's keyframeTimesMs or v9's peaks the publisher's fingerprint was
+/// based on. The Rust schema follows the same shape as
+/// FilmFingerprint (see edits/src/schema.rs after the M9 migration).
 struct EditPack {
     int                  schema = 0;
-    QString              filmFp;
-    QList<FingerprintAnchor> filmAnchors;  // re-uses M8.2 type
+    /// Bucket key the server uses for indexing — typically the
+    /// publisher's approxDurationMin. Receivers ALSO verify by running
+    /// the full fingerprint match against `fingerprint` below.
+    QString              filmId;
+    FilmFingerprint      fingerprint;   // shape mirrors AnalysisResult.fingerprint
     QString              authorPubkey;
     QString              comment;
     QList<EditPackCut>   cuts;
@@ -50,12 +58,13 @@ public:
     static QString  configuredServerUrl();
     static void     setConfiguredServerUrl(const QString& url);
 
-    /// Issue GET <serverUrl>/v1/edits?fp=<filmFp>. Emits packsFetched
-    /// or fetchFailed exactly once.
-    void fetch(const QUrl& serverUrl, const QString& filmFp);
+    /// Issue GET <serverUrl>/v1/edits?id=<filmId>. The filmId is the
+    /// fingerprint's bucket key (typically approxDurationMin as a
+    /// stringified int). Emits packsFetched or fetchFailed exactly once.
+    void fetch(const QUrl& serverUrl, const QString& filmId);
 
 signals:
-    void packsFetched(const QString& filmFp, const QList<EditPack>& packs);
+    void packsFetched(const QString& filmId, const QList<EditPack>& packs);
     void fetchFailed(const QString& reason);
 
 private slots:
@@ -64,7 +73,7 @@ private slots:
 private:
     QNetworkAccessManager* m_nam = nullptr;
     QNetworkReply*         m_reply = nullptr;
-    QString                m_filmFp;
+    QString                m_filmId;
 };
 
 } // namespace censorcut

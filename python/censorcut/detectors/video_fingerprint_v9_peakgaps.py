@@ -490,8 +490,10 @@ def match_fingerprints(fp_a: dict, fp_b: dict,
     pa = peaks_a[:n]
     pb = peaks_b[:n]
 
-    # Estimate trim offset = median(b - a) across paired peaks.
-    diffs = [pb[i]["tMs"] - pa[i]["tMs"] for i in range(n)]
+    # estimatedTrimMs is defined as local - remote (= a - b) so the
+    # caller can map remote timestamps to local via
+    #   local_t = remote_t + estimatedTrimMs.
+    diffs = [pa[i]["tMs"] - pb[i]["tMs"] for i in range(n)]
     diffs_sorted = sorted(diffs)
     estimated_trim = diffs_sorted[n // 2]
 

@@ -49,26 +49,69 @@ struct FrameEmbedding {
     QVector<float>  vec;  // typically 768 or 1024 floats
 };
 
-/// One anchor of the (scene-cut + pHash) video fingerprint. tau is
-/// normalized to [0, 1] over the body window so the fingerprint is
-/// scale-invariant (PAL/NTSC/24p/30p collapse to the same digest).
-struct FingerprintAnchor {
-    double  tau   = 0.0;
-    QString phash;     // 16-char hex (64 bits)
+/// One audio peak of the v9 audio-peak-gap fingerprint. Per-peak time
+/// is in absolute milliseconds; pHash is the 16-hex averaged-5-frame
+/// pHash at the peak. v9 is the fallback path when keyframe extraction
+/// can't get a usable fingerprint (fixed-GOP encodes, missing container
+/// index, exotic muxes).
+struct FingerprintPeak {
+    qint64  tMs = 0;
+    QString phash;        // 16-char hex (64 bits), may be empty if pHash decode failed
 };
 
-/// Scene-cut + pHash video fingerprint. Primary content identifier —
-/// robust to codec, resolution, dub, remaster, intro/outro trim, and
-/// global time-scaling. Different cuts of the same film (theatrical
-/// vs director's vs TV) produce different digests by design.
+/// Type tag values. Stored as QString in FilmFingerprint::type so the
+/// JSON round-trip is trivial and unknown tags fall through to isValid()==false.
+namespace fp_type {
+    constexpr const char* Keyframes     = "keyframes";
+    constexpr const char* AudioPeakGaps = "audio_peak_gaps";
+    constexpr const char* Unknown       = "unknown";
+}
+
+/// Video fingerprint, two-variant. The Python detector picks the right
+/// one per file based on what its container index supports; see
+/// python/censorcut/detectors/video_fingerprint.py.
+///
+///   Keyframes (F): keyframeTimesMs[] from MKV Cues / MP4 stss / AVI
+///       idx1. Match via subset alignment + offset-residual MAD.
+///       ~1000x faster fingerprint compute than the old v1 path because
+///       we read only container metadata, never the bitstream.
+///
+///   AudioPeakGaps (v9): peaks[]+gapsMs[] from the audio-peak detector.
+///       Match via 1-to-1 paired-by-index gap comparison with pHash
+///       agreement. Slower (audio demux walks the file) but works on
+///       containers that don't expose keyframe times.
+///
+/// Different cuts of the same film (theatrical vs director's vs
+/// censored derivative) produce different fingerprints by design —
+/// matching is INTENDED to fail across cuts, so applying one cut's
+/// edits to another's timeline won't silently corrupt them.
 struct FilmFingerprint {
-    int                          version           = 1;
-    qint64                       durationMs        = 0;
-    int                          approxDurationMin = 0;
-    QString                      digest;
-    QList<FingerprintAnchor>     anchors;
+    int     version           = 1;
+    QString type;             // "keyframes" / "audio_peak_gaps" / "unknown"
+    qint64  durationMs        = 0;
+    int     approxDurationMin = 0;
+
+    // Keyframes variant
+    QList<qint64>            keyframeTimesMs;
+
+    // AudioPeakGaps variant
+    QList<FingerprintPeak>   peaks;
+    QList<qint64>            gapsMs;
+    qint64                   innerSpanMs = 0;
+
     [[nodiscard]] bool isValid() const {
-        return !digest.isEmpty() && !anchors.isEmpty();
+        if (type == QLatin1String(fp_type::Keyframes))
+            return !keyframeTimesMs.isEmpty();
+        if (type == QLatin1String(fp_type::AudioPeakGaps))
+            return !peaks.isEmpty();
+        return false;
+    }
+
+    /// Short bucket key for indexing by the edits server (and for the
+    /// status bar). Films of substantially different durations can't
+    /// match, so a single integer (rounded minutes) is enough.
+    [[nodiscard]] QString bucketKey() const {
+        return QString::number(approxDurationMin);
     }
 };
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/AnalysisResult.h"
+
 #include <QMainWindow>
 #include <QString>
 #include <memory>
@@ -40,7 +42,7 @@ private slots:
     void onForgetFeedback();
     void onSetEditsServerUrl();
     void onPullEditsFromServer();
-    void onFingerprintAvailable(const QString& digest);
+    void onFingerprintAvailable(const FilmFingerprint& fp);
     void onSharingSettings();
     void onReviewProposedCategories();
     void onFeedbackSharingChanged(bool on);

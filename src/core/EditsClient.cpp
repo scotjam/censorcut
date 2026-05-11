@@ -12,32 +12,63 @@ namespace censorcut {
 
 namespace {
 
-constexpr qint64 kMaxResponseBytes  = 32 * 1024 * 1024;  // 32 MB hard cap
-constexpr int    kRequestTimeoutMs  = 15000;
-/// Defense in depth — the wire byte cap stops huge payloads, but a
-/// payload could still pack a million tiny anchors / cuts and force
-/// us to allocate per-element. Match the server-side limits in
-/// edits/src/schema.rs (MAX_ANCHORS, MAX_CUTS).
-constexpr int    kMaxAnchorsPerPack = 100;
-constexpr int    kMaxCutsPerPack    = 500;
+constexpr qint64 kMaxResponseBytes      = 32 * 1024 * 1024;  // 32 MB hard cap
+constexpr int    kRequestTimeoutMs      = 15000;
+/// Match server-side caps in edits/src/schema.rs.
+constexpr int    kMaxKeyframesPerPack   = 20000;
+constexpr int    kMaxPeaksPerPack       = 200;
+constexpr int    kMaxCutsPerPack        = 500;
+
+void parseEmbeddedFingerprint(const nlohmann::json& fj, FilmFingerprint& fp)
+{
+    fp.version           = fj.value("version", 1);
+    fp.type              = QString::fromStdString(fj.value("type", std::string{}));
+    fp.durationMs        = fj.value("durationMs", qint64{0});
+    fp.approxDurationMin = fj.value("approxDurationMin", 0);
+    if (fp.type == QLatin1String(fp_type::Keyframes)) {
+        if (fj.contains("keyframeTimesMs") && fj.at("keyframeTimesMs").is_array()) {
+            const auto& arr = fj.at("keyframeTimesMs");
+            fp.keyframeTimesMs.reserve(static_cast<int>(arr.size()));
+            for (const auto& v : arr) {
+                if (fp.keyframeTimesMs.size() >= kMaxKeyframesPerPack) break;
+                if (v.is_number_integer() || v.is_number_unsigned())
+                    fp.keyframeTimesMs.append(v.get<qint64>());
+            }
+        }
+    } else if (fp.type == QLatin1String(fp_type::AudioPeakGaps)) {
+        fp.innerSpanMs = fj.value("innerSpanMs", qint64{0});
+        if (fj.contains("peaks") && fj.at("peaks").is_array()) {
+            for (const auto& pj : fj.at("peaks")) {
+                if (fp.peaks.size() >= kMaxPeaksPerPack) break;
+                if (!pj.is_object()) continue;
+                FingerprintPeak p;
+                p.tMs   = pj.value("tMs", qint64{0});
+                p.phash = QString::fromStdString(pj.value("phash", std::string{}));
+                fp.peaks.append(p);
+            }
+        }
+        if (fj.contains("gapsMs") && fj.at("gapsMs").is_array()) {
+            const auto& arr = fj.at("gapsMs");
+            fp.gapsMs.reserve(static_cast<int>(arr.size()));
+            for (const auto& v : arr) {
+                if (fp.gapsMs.size() >= kMaxPeaksPerPack) break;
+                if (v.is_number_integer() || v.is_number_unsigned())
+                    fp.gapsMs.append(v.get<qint64>());
+            }
+        }
+    }
+}
 
 EditPack packFromJson(const nlohmann::json& j, const QByteArray& rawSlice)
 {
     EditPack pack;
     pack.schema       = j.value("schema", 0);
-    pack.filmFp       = QString::fromStdString(j.value("film_fp", std::string{}));
+    pack.filmId       = QString::fromStdString(j.value("film_id", std::string{}));
     pack.authorPubkey = QString::fromStdString(j.value("author_pubkey", std::string{}));
     pack.comment      = QString::fromStdString(j.value("comment", std::string{}));
     pack.rawJson      = rawSlice;
-    if (j.contains("film_anchors") && j.at("film_anchors").is_array()) {
-        for (const auto& aj : j.at("film_anchors")) {
-            if (pack.filmAnchors.size() >= kMaxAnchorsPerPack) break;
-            if (!aj.is_object()) continue;
-            FingerprintAnchor a;
-            a.tau   = aj.value("tau", 0.0);
-            a.phash = QString::fromStdString(aj.value("phash", std::string{}));
-            if (!a.phash.isEmpty()) pack.filmAnchors.append(a);
-        }
+    if (j.contains("fingerprint") && j.at("fingerprint").is_object()) {
+        parseEmbeddedFingerprint(j.at("fingerprint"), pack.fingerprint);
     }
     if (j.contains("cuts") && j.at("cuts").is_array()) {
         for (const auto& cj : j.at("cuts")) {
@@ -77,14 +108,14 @@ void EditsClient::setConfiguredServerUrl(const QString& url)
     s.setValue(QStringLiteral("edits/serverUrl"), url);
 }
 
-void EditsClient::fetch(const QUrl& serverUrl, const QString& filmFp)
+void EditsClient::fetch(const QUrl& serverUrl, const QString& filmId)
 {
     if (m_reply) {
         m_reply->abort();
         m_reply->deleteLater();
         m_reply = nullptr;
     }
-    m_filmFp = filmFp;
+    m_filmId = filmId;
 
     QUrl url = serverUrl;
     if (url.path().isEmpty() || url.path() == QStringLiteral("/")) {
@@ -93,7 +124,7 @@ void EditsClient::fetch(const QUrl& serverUrl, const QString& filmFp)
         url.setPath(url.path() + QStringLiteral("/v1/edits"));
     }
     QUrlQuery q;
-    q.addQueryItem(QStringLiteral("fp"), filmFp);
+    q.addQueryItem(QStringLiteral("id"), filmId);
     url.setQuery(q);
 
     QNetworkRequest req(url);
@@ -143,7 +174,7 @@ void EditsClient::onReplyFinished()
             packs.append(packFromJson(pj, QByteArray{}));
         }
     }
-    emit packsFetched(m_filmFp, packs);
+    emit packsFetched(m_filmId, packs);
 }
 
 } // namespace censorcut

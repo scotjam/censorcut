@@ -73,24 +73,49 @@ AnalysisResult parseAnalysisResultJson(const QByteArray& jsonBytes, QString* err
     }
 
     if (j.contains("fingerprint") && j.at("fingerprint").is_object()) {
-        // The analyzer caps anchors at 100 by design; allow 2× headroom
-        // for forward compat, then truncate. Defense in depth: the JSON
-        // could come from a tampered sidecar, not just our own writer.
-        constexpr int kMaxFingerprintAnchors = 200;
+        // Defense in depth: the JSON could come from a tampered sidecar,
+        // not just our own writer. Cap keyframe and peak counts well
+        // above the producer's typical output (a few thousand) to allow
+        // forward-compat headroom without enabling memory exhaustion.
+        constexpr int kMaxKeyframes = 20000;
+        constexpr int kMaxPeaks     = 200;
         const auto& fj = j.at("fingerprint");
         FilmFingerprint fp;
         fp.version           = fj.value("version", 1);
+        fp.type              = QString::fromStdString(fj.value("type", std::string{}));
         fp.durationMs        = fj.value("durationMs", qint64{0});
         fp.approxDurationMin = fj.value("approxDurationMin", 0);
-        fp.digest            = QString::fromStdString(fj.value("digest", std::string{}));
-        if (fj.contains("anchors") && fj.at("anchors").is_array()) {
-            for (const auto& aj : fj.at("anchors")) {
-                if (fp.anchors.size() >= kMaxFingerprintAnchors) break;
-                if (!aj.is_object()) continue;
-                FingerprintAnchor a;
-                a.tau   = aj.value("tau", 0.0);
-                a.phash = QString::fromStdString(aj.value("phash", std::string{}));
-                if (!a.phash.isEmpty()) fp.anchors.append(a);
+        if (fp.type == QLatin1String(fp_type::Keyframes)) {
+            if (fj.contains("keyframeTimesMs") && fj.at("keyframeTimesMs").is_array()) {
+                const auto& arr = fj.at("keyframeTimesMs");
+                fp.keyframeTimesMs.reserve(static_cast<int>(arr.size()));
+                for (const auto& v : arr) {
+                    if (fp.keyframeTimesMs.size() >= kMaxKeyframes) break;
+                    if (v.is_number_integer() || v.is_number_unsigned()) {
+                        fp.keyframeTimesMs.append(v.get<qint64>());
+                    }
+                }
+            }
+        } else if (fp.type == QLatin1String(fp_type::AudioPeakGaps)) {
+            fp.innerSpanMs = fj.value("innerSpanMs", qint64{0});
+            if (fj.contains("peaks") && fj.at("peaks").is_array()) {
+                for (const auto& pj : fj.at("peaks")) {
+                    if (fp.peaks.size() >= kMaxPeaks) break;
+                    if (!pj.is_object()) continue;
+                    FingerprintPeak p;
+                    p.tMs   = pj.value("tMs", qint64{0});
+                    p.phash = QString::fromStdString(pj.value("phash", std::string{}));
+                    fp.peaks.append(p);
+                }
+            }
+            if (fj.contains("gapsMs") && fj.at("gapsMs").is_array()) {
+                const auto& arr = fj.at("gapsMs");
+                fp.gapsMs.reserve(static_cast<int>(arr.size()));
+                for (const auto& v : arr) {
+                    if (fp.gapsMs.size() >= kMaxPeaks) break;
+                    if (v.is_number_integer() || v.is_number_unsigned())
+                        fp.gapsMs.append(v.get<qint64>());
+                }
             }
         }
         result.fingerprint = fp;

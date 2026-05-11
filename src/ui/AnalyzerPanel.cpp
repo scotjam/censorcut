@@ -300,7 +300,7 @@ void AnalyzerPanel::onCompleted(const AnalysisResult& result)
     if (m_feedback) m_feedback->setLatestEmbeddings(result.frameEmbeddings);
     m_latestFingerprint = result.fingerprint;
     if (m_latestFingerprint.isValid())
-        emit fingerprintAvailable(m_latestFingerprint.digest);
+        emit fingerprintAvailable(m_latestFingerprint);
 
     int added = 0;
     if (m_markers) {

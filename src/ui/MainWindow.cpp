@@ -429,17 +429,43 @@ void MainWindow::onOpenFile()
     }, Qt::QueuedConnection);
 }
 
-void MainWindow::onFingerprintAvailable(const QString& digest)
+void MainWindow::onFingerprintAvailable(const FilmFingerprint& fp)
 {
     if (!m_fingerprintLabel) return;
-    if (digest.isEmpty()) {
+    if (!fp.isValid()) {
         m_fingerprintLabel->setText(tr("Fingerprint: (unavailable)"));
         m_fingerprintLabel->setToolTip(tr("Fingerprint not yet available"));
         return;
     }
-    m_fingerprintLabel->setText(
-        tr("Fingerprint: %1…").arg(digest.left(12)));
-    m_fingerprintLabel->setToolTip(digest);
+    QString shortLabel, tip;
+    if (fp.type == QLatin1String(fp_type::Keyframes)) {
+        shortLabel = tr("Fingerprint: %1 keyframes, ~%2 min")
+                          .arg(fp.keyframeTimesMs.size())
+                          .arg(fp.approxDurationMin);
+        tip = tr("Type: keyframes\n"
+                 "Bucket key: %1 min\n"
+                 "%2 keyframes from container index\n"
+                 "Duration: %3 ms")
+                  .arg(fp.approxDurationMin)
+                  .arg(fp.keyframeTimesMs.size())
+                  .arg(fp.durationMs);
+    } else if (fp.type == QLatin1String(fp_type::AudioPeakGaps)) {
+        shortLabel = tr("Fingerprint: %1 audio peaks, ~%2 min")
+                          .arg(fp.peaks.size())
+                          .arg(fp.approxDurationMin);
+        tip = tr("Type: audio_peak_gaps (fallback)\n"
+                 "Bucket key: %1 min\n"
+                 "%2 audio peaks\n"
+                 "Duration: %3 ms")
+                  .arg(fp.approxDurationMin)
+                  .arg(fp.peaks.size())
+                  .arg(fp.durationMs);
+    } else {
+        shortLabel = tr("Fingerprint: (type=%1)").arg(fp.type);
+        tip = shortLabel;
+    }
+    m_fingerprintLabel->setText(shortLabel);
+    m_fingerprintLabel->setToolTip(tip);
 }
 
 void MainWindow::loadProjectFor(const QString& moviePath)

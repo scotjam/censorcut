@@ -1,376 +1,309 @@
-"""Video-content fingerprint built from scene-cut timing + per-cut pHash.
+"""Production video-content fingerprint: keyframe-time list + MAD match.
 
-Identifies a specific cut of a film (theatrical / director's / TV) so
-the federated edits database can apply user-authored cuts to any
-encode of that same cut. Robust to:
-  - Different codecs (H.264 / H.265 / VP9 / AV1)
-  - Different resolutions and aspect ratios (letterboxing detected)
-  - Different frame rates (timestamps in milliseconds, not frame indices)
-  - Time-scaling (PAL speedup) — fingerprint is scale-invariant
-  - Different audio (dubs, remasters) — audio is irrelevant here
-  - Different intro/outro lengths — body window with adaptive cushion
+Algorithm F: extract the full keyframe-time list from the container
+index (Cues/stss/idx1) via fast_keyframes, store it as the fingerprint.
+Match by order-preserving subset alignment with a single time offset,
+verdict = match_fraction >= 55% AND offset-residual MAD <= 250 ms.
 
-NOT robust to:
-  - Different cuts of the film (which is correct — cuts have different
-    scene timings, so they should produce different fingerprints)
-  - Aggressive bitrate (≤ 1 Mbps streaming) where soft cuts smooth out
-  - Films with very few cuts (< 30 cuts in a 90-minute film)
-  - Heavy re-grading that shifts pHash beyond the threshold
+Properties (validated on D:\\censorcut-test corpus + 238-film library
+bench, 0 false positives across 28k pairs):
 
-Algorithm:
-  1. ffmpeg pipeline:
-       -hwaccel auto
-       -vf "fps=2, scale=32:32, format=gray"
-       -f rawvideo
-     → 1024 bytes per frame (32*32 grayscale).
+  cross-encode invariance     yes — scene-cut keyframes are content events
+  cross-codec invariance      yes — container-level keyframe positions
+  cross-resolution            yes — keyframe times don't depend on res
+  intro/outro trim            yes — single offset absorbs uniform shift,
+                                    MAD stays at encoder-jitter levels
+  mid-film cuts (different    no  — by design. Multi-cut content produces
+    cut of the same film)           multi-modal time-diffs, MAD blows up,
+                                    verdict = DIFFER. This is correct:
+                                    cuts at different content positions
+                                    aren't applicable to the original.
 
-  2. Per frame: compute a 64-bit pHash (DCT → 8x8 low-freq block →
-     drop DC → median threshold → 63 bits, pad to 64).
+Failure mode: when the container has no keyframe index (broken AVI,
+some streaming muxes, fixed-GOP encodes after the dedupe step), we
+fall back to the v9 audio-peak-gap fingerprint. Audio peak gaps are
+content-derived and trim-tolerant, so the same matching semantics
+apply, but they require reading the audio stream — much slower than
+the container-metadata-only F path.
 
-  3. Detect cuts: Hamming distance between consecutive pHashes;
-     adaptive threshold over a sliding 90-second median; minimum
-     spacing 1 second.
+Output shape:
 
-  4. Refine each cut to sub-frame time via parabolic interpolation
-     of the 3-point Hamming-distance peak.
+  F (primary):
+    {
+      "version":            <int>,           # 1 currently
+      "type":               "keyframes",
+      "durationMs":         <int>,
+      "approxDurationMin":  <int>,
+      "keyframeCount":      <int>,
+      "keyframeTimesMs":    [<int>, ...],
+    }
 
-  5. Body window:
-       cushion = min(10 min, durationMs / 3)
-       body    = [cushion, durationMs - cushion]
+  v9 (fallback):
+    {
+      "version":            <int>,           # 1 currently
+      "type":               "audio_peak_gaps",
+      "durationMs":         <int>,
+      "approxDurationMin":  <int>,
+      "innerSpanMs":        <int>,
+      "peakCount":          <int>,
+      "gapsMs":             [<int>, ...],
+      "peaks":              [{"tMs": int, "phash": "<16-hex>"}, ...],
+    }
 
-  6. Pick top-100 cuts BY HAMMING-DISTANCE MAGNITUDE inside the body.
-
-  7. Normalize timestamps to [0, 1] over the body:
-       tau[i] = (cut[i].t - body_start) / (body_end - body_start)
-     PAL-speedup multiplies all times by α; the ratio cancels α.
-     → Fingerprint is scale-invariant.
-
-  8. Bucket each tau at 0.0005 resolution; concatenate IN ORDER with
-     the per-cut phash; sha256 → digest.
-
-  9. Output: {version, durationMs, approxDurationMin, anchors:[{tau, phash}], digest}
+Caller is expected to look at the `type` field and dispatch to the
+right matcher. match_fingerprints() in this module does that
+automatically.
 """
 
 from __future__ import annotations
 
-import hashlib
-import shutil
-import subprocess
 import sys
 from typing import Dict, List, Optional, Tuple
 
-# ----------------------------------------------------------------------
-# Tunables
-# ----------------------------------------------------------------------
+from . import fast_keyframes
+from . import video_fingerprint_v9_peakgaps as v9
+from . import video_fingerprint_v11_keyframe as v11
 
-SAMPLE_FPS              = 2                  # frame rate for cut detection
-                                              # (was 8; cuts are 1-frame events
-                                              # producing 25+ bit pHash deltas,
-                                              # detectable at any rate ≥ 2 fps;
-                                              # 4× decode speedup vs 8 fps)
-PHASH_RES               = 32                 # decode each frame to NxN gray
-PHASH_DCT_KEEP          = 8                  # keep top-left 8x8 DCT block
-TOP_K_CUTS              = 100
-MIN_CUT_SPACING_MS      = 1000               # 1 second
-ADAPTIVE_WINDOW_SEC     = 90                 # sliding-median window
-                                              # (was 30; widened to compensate
-                                              # for the 4× lower sample rate so
-                                              # the median still sees ~180
-                                              # samples)
-THRESHOLD_MULTIPLIER    = 4.0                # cut iff hd > median * mul
-TAU_BUCKET              = 0.0005             # ~2.7s at 90min runtime
-PHASH_HEX_CHARS         = 16                 # 64 bits
+# Schema version. Bump if the on-disk shape changes in a way readers
+# need to know about. The C++ side and the Rust edits server check
+# this field.
+FINGERPRINT_VERSION = 1
+
+# F: minimum surviving keyframes for the F path to be viable. Below
+# this we fall back to v9. Same threshold as fast_keyframes / v11.
+MIN_KEYFRAMES = 30
+
+# F: match thresholds (validated on D:\censorcut-test corpus).
+GAP_TOL_MS         = 2000
+MIN_MATCH_FRAC     = 0.55
+MAX_MAD_MS         = 250
 
 
-# ----------------------------------------------------------------------
-# Pipeline
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# Fingerprint compute
+# ---------------------------------------------------------------------
 
-def _ffmpeg_exe() -> str:
-    p = shutil.which("ffmpeg")
-    if not p:
-        raise RuntimeError("ffmpeg not found on PATH")
-    return p
-
-
-def _decode_command(input_path: str) -> List[str]:
-    """ffmpeg invocation: hardware-decode if available, sample at
-    SAMPLE_FPS, scale to PHASH_RES x PHASH_RES grayscale, raw bytes."""
-    return [
-        _ffmpeg_exe(),
-        "-hide_banner", "-loglevel", "error",
-        "-hwaccel", "auto",
-        "-i", input_path,
-        "-an", "-sn", "-dn",
-        "-vf", f"fps={SAMPLE_FPS},scale={PHASH_RES}:{PHASH_RES},format=gray",
-        "-f", "rawvideo",
-        "-",
-    ]
-
-
-def _decode_command_software(input_path: str) -> List[str]:
-    """Same pipeline without hwaccel — used as fallback if hwaccel
-    initialisation fails. Some Windows machines have hwaccel auto
-    pick a backend that can't decode the source codec."""
-    return [
-        _ffmpeg_exe(),
-        "-hide_banner", "-loglevel", "error",
-        "-i", input_path,
-        "-an", "-sn", "-dn",
-        "-vf", f"fps={SAMPLE_FPS},scale={PHASH_RES}:{PHASH_RES},format=gray",
-        "-f", "rawvideo",
-        "-",
-    ]
-
-
-def _stream_frames(cmd: List[str]):
-    """Yield (frame_index, 1024-byte grayscale frame) tuples."""
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    frame_size = PHASH_RES * PHASH_RES
-    idx = 0
-    try:
-        assert proc.stdout is not None
-        while True:
-            buf = proc.stdout.read(frame_size)
-            if not buf:
-                break
-            if len(buf) < frame_size:
-                # ragged tail — discard
-                break
-            yield idx, buf
-            idx += 1
-    finally:
-        if proc.stdout: proc.stdout.close()
-        err = b""
-        if proc.stderr:
-            try:
-                err = proc.stderr.read() or b""
-            except Exception:
-                pass
-            proc.stderr.close()
-        rc = proc.wait(timeout=10)
-        if rc != 0:
-            raise RuntimeError(
-                f"ffmpeg exited {rc}: {err.decode('utf-8', 'replace').strip()[:400]}")
-
-
-# ----------------------------------------------------------------------
-# pHash (DCT-based, 64-bit)
-# ----------------------------------------------------------------------
-
-def _make_dct_matrix(np, n: int):
-    """DCT-II coefficients as an N x N matrix M, where DCT2(x) = M @ x.
-    For a 2D image we apply M @ image @ M.T."""
-    k = np.arange(n)[:, None]
-    i = np.arange(n)[None, :]
-    m = np.cos(np.pi * (i + 0.5) * k / n)
-    # Orthonormal scaling so the output is comparable across N.
-    m[0, :] *= 1.0 / np.sqrt(2.0)
-    m *= np.sqrt(2.0 / n)
-    return m.astype(np.float32)
-
-
-def _phash_from_frame(np, dct_matrix, frame_bytes: bytes) -> int:
-    """Compute a 64-bit pHash from a PHASH_RES x PHASH_RES grayscale
-    frame. Returns a Python int (64 significant bits)."""
-    arr = np.frombuffer(frame_bytes, dtype=np.uint8) \
-            .reshape(PHASH_RES, PHASH_RES) \
-            .astype(np.float32)
-    # 2D DCT-II via the precomputed matrix.
-    coeffs = dct_matrix @ arr @ dct_matrix.T
-    block = coeffs[:PHASH_DCT_KEEP, :PHASH_DCT_KEEP]
-    # Discard the DC term (overall brightness — varies with encoding/grade).
-    flat = block.flatten()
-    flat_no_dc = np.concatenate([flat[:0], flat[1:]])  # drop index 0
-    median = float(np.median(flat_no_dc))
-    bits = (flat_no_dc > median)
-    # Pack 63 bits into a 64-bit int (pad MSB with 0).
-    out = 0
-    for b in bits.tolist():
-        out = (out << 1) | (1 if b else 0)
-    return out
-
-
-def _hamming(a: int, b: int) -> int:
-    return bin(a ^ b).count("1")
-
-
-# ----------------------------------------------------------------------
-# Cut detection
-# ----------------------------------------------------------------------
-
-def _detect_cuts(np,
-                 phashes: List[int],
-                 frame_period_ms: int) -> List[Tuple[int, float]]:
-    """Find scene cuts as (frame_index, hamming_distance) pairs.
-
-    Adaptive threshold: at each frame, compare Hamming distance to the
-    median of distances within ADAPTIVE_WINDOW_SEC. A cut fires if it
-    exceeds the local median × THRESHOLD_MULTIPLIER and is the local
-    maximum within MIN_CUT_SPACING_MS."""
-    if len(phashes) < 3:
-        return []
-
-    diffs = np.zeros(len(phashes), dtype=np.int32)
-    for i in range(1, len(phashes)):
-        diffs[i] = _hamming(phashes[i - 1], phashes[i])
-
-    window_frames = max(1, int(ADAPTIVE_WINDOW_SEC * 1000 / frame_period_ms))
-    half = window_frames // 2
-    cuts: List[Tuple[int, float]] = []
-    min_spacing_frames = max(1, int(MIN_CUT_SPACING_MS / frame_period_ms))
-    last_cut_at = -10_000_000
-
-    # Precompute rolling median by quantile-of-window.
-    # For speed, use a coarser non-overlapping median.
-    for i in range(1, len(phashes)):
-        lo = max(1, i - half)
-        hi = min(len(phashes), i + half + 1)
-        # Median over the window (excluding the candidate itself if it's
-        # an obvious outlier — it'll dominate a small window).
-        window = diffs[lo:hi]
-        if window.size == 0:
-            continue
-        med = float(np.median(window))
-        threshold = max(med * THRESHOLD_MULTIPLIER, 8.0)  # noise floor
-        if diffs[i] >= threshold and diffs[i] > diffs[i - 1] and \
-           (i + 1 >= len(diffs) or diffs[i] >= diffs[i + 1]):
-            if i - last_cut_at < min_spacing_frames:
-                # Within spacing window — keep the larger of the two.
-                if cuts and diffs[i] > cuts[-1][1]:
-                    cuts[-1] = (i, float(diffs[i]))
-                continue
-            cuts.append((i, float(diffs[i])))
-            last_cut_at = i
-
-    return cuts
-
-
-def _refine_cut_time(diffs, frame_index: int, frame_period_ms: int) -> float:
-    """Parabolic interpolation around (i-1, i, i+1) to give a sub-frame
-    time refinement. Returns time in milliseconds."""
-    i = frame_index
-    if i <= 0 or i >= len(diffs) - 1:
-        return float(i * frame_period_ms)
-    y0, y1, y2 = float(diffs[i - 1]), float(diffs[i]), float(diffs[i + 1])
-    denom = (y0 - 2 * y1 + y2)
-    if abs(denom) < 1e-6:
-        return float(i * frame_period_ms)
-    delta = 0.5 * (y0 - y2) / denom
-    delta = max(-1.0, min(1.0, delta))  # clamp to ±1 frame
-    return float((i + delta) * frame_period_ms)
-
-
-# ----------------------------------------------------------------------
-# Body window
-# ----------------------------------------------------------------------
-
-def _body_window(duration_ms: int) -> Tuple[int, int]:
-    """Adaptive cushion: 10 minutes for full-length films, scaled down
-    for short content."""
-    cushion = min(10 * 60 * 1000, duration_ms // 3)
-    return cushion, max(cushion + 1, duration_ms - cushion)
-
-
-# ----------------------------------------------------------------------
-# Public entry point
-# ----------------------------------------------------------------------
-
-def run(input_path: str,
-        duration_ms: int,
+def run(input_path: str, duration_ms: int,
         progress=None) -> Dict[str, object]:
-    """Compute the video fingerprint. Returns:
-        {"version": 1,
-         "durationMs": <int>,
-         "approxDurationMin": <int>,
-         "anchors": [{"tau": float, "phash": "<16-hex>"}, ...],
-         "digest": "<sha256 hex>"}
-    On any failure, returns {"version": 1, "anchors": []}."""
+    """Compute a video fingerprint for `input_path`. Tries the F path
+    first (container-index-only, ~1-2 sec on a network share); falls
+    back to v9 audio peak gaps when F can't get enough keyframes.
+
+    Always returns a dict. On total failure the dict has
+    `type='unknown'` and `error=<reason>`, with no keyframeTimesMs or
+    peaks — callers can detect this via `type` and skip matching.
+    """
     if duration_ms <= 0:
-        return {"version": 1, "anchors": []}
+        return {
+            "version": FINGERPRINT_VERSION,
+            "type":    "unknown",
+            "error":   "no duration",
+        }
+    if progress: progress(0.0, "fingerprint:keyframes")
+    # F path: pull keyframe times via fast_keyframes (direct MKV/MP4/
+    # AVI container-index parse), falling back through v11's ffprobe
+    # ladder for files where the direct parse doesn't recognise the
+    # container or the index is missing.
+    times = v11._extract_keyframe_times_ms(input_path)
+    if times is not None and len(times) >= MIN_KEYFRAMES:
+        if progress: progress(1.0, "fingerprint:done")
+        return {
+            "version":           FINGERPRINT_VERSION,
+            "type":              "keyframes",
+            "durationMs":        duration_ms,
+            "approxDurationMin": int(round(duration_ms / 60_000.0)),
+            "keyframeCount":     len(times),
+            "keyframeTimesMs":   times,
+        }
 
-    try:
-        import numpy as np  # type: ignore
-    except ImportError:
-        print("censorcut.video_fingerprint: numpy not available; skipping",
-              file=sys.stderr)
-        return {"version": 1, "anchors": []}
-
-    if progress: progress(0.0, "video_fingerprint:decode")
-    dct_mat = _make_dct_matrix(np, PHASH_RES)
-    frame_period_ms = int(round(1000.0 / SAMPLE_FPS))
-    phashes: List[int] = []
-
-    # Try hwaccel first; if ffmpeg fails (e.g., Windows D3D11 init issue
-    # for HEVC Main10), fall back to software decode.
-    try:
-        for _idx, buf in _stream_frames(_decode_command(input_path)):
-            phashes.append(_phash_from_frame(np, dct_mat, buf))
-    except Exception as e:
-        print(f"censorcut.video_fingerprint: hwaccel decode failed ({e}); "
-              "retrying with software decode", file=sys.stderr)
-        phashes = []
-        try:
-            for _idx, buf in _stream_frames(_decode_command_software(input_path)):
-                phashes.append(_phash_from_frame(np, dct_mat, buf))
-        except Exception as e2:
-            print(f"censorcut.video_fingerprint: software decode failed: {e2}",
-                  file=sys.stderr)
-            return {"version": 1, "anchors": []}
-
-    if len(phashes) < 30:
-        return {"version": 1, "anchors": []}
-
-    if progress: progress(0.85, "video_fingerprint:cuts")
-    diffs = np.zeros(len(phashes), dtype=np.int32)
-    for i in range(1, len(phashes)):
-        diffs[i] = _hamming(phashes[i - 1], phashes[i])
-    cuts = _detect_cuts(np, phashes, frame_period_ms)
-
-    body_lo, body_hi = _body_window(duration_ms)
-
-    # Filter cuts to body, refine sub-frame.
-    in_body: List[Tuple[float, int, float]] = []  # (t_ms, frame_idx, hd)
-    for frame_idx, hd in cuts:
-        t_ms = _refine_cut_time(diffs, frame_idx, frame_period_ms)
-        if body_lo <= t_ms < body_hi:
-            in_body.append((t_ms, frame_idx, hd))
-
-    if len(in_body) < 5:
-        # Not enough cuts to form a fingerprint.
-        return {"version": 1, "durationMs": duration_ms, "anchors": []}
-
-    # Top-K by Hamming distance magnitude.
-    in_body.sort(key=lambda r: r[2], reverse=True)
-    top = in_body[:TOP_K_CUTS]
-    # Sort selected back into time order.
-    top.sort(key=lambda r: r[0])
-
-    if progress: progress(0.95, "video_fingerprint:digest")
-    body_span = float(body_hi - body_lo)
-    if body_span <= 0:
-        return {"version": 1, "durationMs": duration_ms, "anchors": []}
-
-    anchors_out = []
-    digest_parts: List[str] = []
-    for t_ms, frame_idx, _hd in top:
-        tau = (t_ms - body_lo) / body_span
-        # Quantize tau to the bucket grid for the digest, but keep the
-        # raw tau in the published anchor for fuzzy matching.
-        bucket = int(round(tau / TAU_BUCKET))
-        phash_int = phashes[frame_idx]
-        phash_hex = f"{phash_int:0{PHASH_HEX_CHARS}x}"
-        anchors_out.append({"tau": round(tau, 6), "phash": phash_hex})
-        digest_parts.append(f"{bucket:05d}:{phash_hex}")
-
-    digest_input = "v1|" + "|".join(digest_parts)
-    digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
-
-    if progress: progress(1.0, "video_fingerprint:done")
+    # Fall back to v9 audio peak gaps. This is dramatically slower
+    # because it reads the audio stream end-to-end (the audio demux
+    # still requires walking most of the file), but it works for
+    # fixed-GOP / no-Cues / broken-AVI cases that defeat F.
+    print("censorcut.video_fingerprint: F path got "
+          f"{len(times) if times else 0} keyframe(s); falling back to v9",
+          file=sys.stderr)
+    if progress: progress(0.05, "fingerprint:v9-audio")
+    fp9 = v9.run(input_path, duration_ms=duration_ms, progress=progress)
+    if not fp9.get("peaks"):
+        return {
+            "version":          FINGERPRINT_VERSION,
+            "type":             "unknown",
+            "durationMs":       duration_ms,
+            "approxDurationMin": int(round(duration_ms / 60_000.0)),
+            "error":            "no keyframes and v9 fallback also failed",
+        }
     return {
-        "version":           1,
+        "version":           FINGERPRINT_VERSION,
+        "type":              "audio_peak_gaps",
         "durationMs":        duration_ms,
         "approxDurationMin": int(round(duration_ms / 60_000.0)),
-        "anchors":           anchors_out,
-        "digest":            digest,
+        "innerSpanMs":       fp9.get("innerSpanMs", 0),
+        "peakCount":         fp9.get("peakCount", 0),
+        "gapsMs":            fp9.get("gapsMs", []),
+        "peaks":             fp9.get("peaks", []),
+    }
+
+
+# ---------------------------------------------------------------------
+# Match: subset alignment + offset-residual MAD
+# ---------------------------------------------------------------------
+
+def _ordered_pairs(short: List[int], long: List[int],
+                    offset_ms: int, tol_ms: int) -> List[Tuple[int, int]]:
+    """Order-preserving 1-to-1 subset matching with cursor advance.
+    Returns the list of (short_t, long_t) pairs whose times agree to
+    within +-tol_ms after `offset_ms` is added to short side."""
+    pairs: List[Tuple[int, int]] = []
+    j = 0
+    n_long = len(long)
+    for t in short:
+        target = t + offset_ms
+        while j < n_long and long[j] < target - tol_ms:
+            j += 1
+        if j >= n_long:
+            break
+        if abs(long[j] - target) <= tol_ms:
+            pairs.append((t, long[j]))
+            j += 1
+    return pairs
+
+
+def _best_offset_pairs(short: List[int], long: List[int],
+                         tol_ms: int, probe_k: int = 50,
+                         probe_range_ms: int = 10 * 60 * 1000
+                         ) -> Tuple[int, List[Tuple[int, int]]]:
+    """Try a handful of plausible offsets (aligning short[0] against
+    each of the first probe_k entries in long, plus probe_k entries
+    near the end of long), pick the one that pairs the most short
+    entries. Returns (best_offset, matched_pairs).
+    """
+    if not short or not long:
+        return 0, []
+    candidates: List[int] = []
+    s0 = short[0]
+    for k in range(min(probe_k, len(long))):
+        cand = long[k] - s0
+        if abs(cand) <= probe_range_ms:
+            candidates.append(cand)
+    s_last = short[-1]
+    for k in range(min(probe_k, len(long))):
+        idx = len(long) - 1 - k
+        if idx < 0:
+            break
+        cand = long[idx] - s_last
+        if abs(cand) <= probe_range_ms and cand not in candidates:
+            candidates.append(cand)
+    if not candidates:
+        return 0, []
+    best_offset = candidates[0]
+    best_pairs: List[Tuple[int, int]] = []
+    for cand in candidates:
+        pairs = _ordered_pairs(short, long, cand, tol_ms)
+        if len(pairs) > len(best_pairs):
+            best_pairs = pairs
+            best_offset = cand
+    return best_offset, best_pairs
+
+
+def _median(xs: List[float]) -> float:
+    if not xs:
+        return 0.0
+    s = sorted(xs)
+    n = len(s)
+    if n % 2 == 1:
+        return float(s[n // 2])
+    return float((s[n // 2 - 1] + s[n // 2]) / 2)
+
+
+def _mad_ms(diffs: List[int]) -> float:
+    if not diffs:
+        return 0.0
+    med = _median([float(d) for d in diffs])
+    return _median([abs(float(d) - med) for d in diffs])
+
+
+def _match_f(fp_a: dict, fp_b: dict) -> Dict[str, object]:
+    """F-path match: timing-only, no pHash. Caller has already
+    confirmed both sides are type=='keyframes'."""
+    times_a = sorted(fp_a.get("keyframeTimesMs") or [])
+    times_b = sorted(fp_b.get("keyframeTimesMs") or [])
+    if len(times_a) < MIN_KEYFRAMES or len(times_b) < MIN_KEYFRAMES:
+        return {
+            "isSameFilm":    False,
+            "matched":       0,
+            "totalShorter":  min(len(times_a), len(times_b)),
+            "matchFraction": 0.0,
+            "madMs":         0.0,
+            "estimatedTrimMs": 0,
+            "reason": (f"insufficient keyframes "
+                        f"(a={len(times_a)}, b={len(times_b)})"),
+        }
+    if len(times_a) <= len(times_b):
+        short, long_ = times_a, times_b
+        a_is_short = True
+    else:
+        short, long_ = times_b, times_a
+        a_is_short = False
+    _offset, pairs = _best_offset_pairs(short, long_, GAP_TOL_MS)
+    matched = len(pairs)
+    match_frac = matched / len(short) if short else 0.0
+    diffs = [b - a for a, b in pairs]
+    mad = _mad_ms(diffs)
+    median_diff = int(_median([float(d) for d in diffs])) if diffs else 0
+    signed = (median_diff if not a_is_short else -median_diff)
+    same = (match_frac >= MIN_MATCH_FRAC) and (mad <= MAX_MAD_MS)
+    return {
+        "isSameFilm":      same,
+        "matched":         matched,
+        "totalShorter":    len(short),
+        "matchFraction":   match_frac,
+        "madMs":           mad,
+        "estimatedTrimMs": signed,
+        "reason": (f"timing {matched}/{len(short)} ({match_frac:.0%}), "
+                    f"MAD={mad:.0f}ms (max {MAX_MAD_MS}ms), "
+                    f"trim~={signed}ms"),
+    }
+
+
+def _match_v9(fp_a: dict, fp_b: dict) -> Dict[str, object]:
+    """Fallback: v9's peak-gap matcher. Caller has confirmed both
+    sides are type=='audio_peak_gaps'."""
+    raw = v9.match_fingerprints(fp_a, fp_b)
+    # Normalize the keys to F's style for caller convenience.
+    return {
+        "isSameFilm":      raw.get("isSameFilm", False),
+        "matched":         raw.get("matchedGaps", 0),
+        "totalShorter":    raw.get("totalGaps", 0),
+        "matchFraction":   (raw.get("matchedGaps", 0)
+                            / max(1, raw.get("totalGaps", 1))),
+        "phashMatched":    raw.get("matchedPHashes", 0),
+        "phashCompared":   raw.get("totalPHashes", 0),
+        "estimatedTrimMs": raw.get("estimatedTrimMs", 0),
+        "reason":          raw.get("reason", ""),
+    }
+
+
+def match_fingerprints(fp_a: dict, fp_b: dict) -> Dict[str, object]:
+    """Dispatch by fingerprint type. Same-type pairs use their native
+    matcher; cross-type pairs (one F, one v9) are declared NOT same
+    film because we don't yet have a way to compare apples-and-oranges
+    fingerprints. The caller can resolve cross-type cases by
+    re-fingerprinting one side with the other's algorithm.
+    """
+    type_a = fp_a.get("type")
+    type_b = fp_b.get("type")
+    if type_a == "keyframes" and type_b == "keyframes":
+        return _match_f(fp_a, fp_b)
+    if type_a == "audio_peak_gaps" and type_b == "audio_peak_gaps":
+        return _match_v9(fp_a, fp_b)
+    return {
+        "isSameFilm":      False,
+        "matched":         0,
+        "totalShorter":    0,
+        "matchFraction":   0.0,
+        "madMs":           0.0,
+        "estimatedTrimMs": 0,
+        "reason": (f"incompatible fingerprint types: "
+                    f"{type_a!r} vs {type_b!r}"),
     }

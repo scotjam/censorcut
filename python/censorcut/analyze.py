@@ -174,7 +174,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # as the user opens it, without paying CLIP/Whisper compute.
     if args.fingerprint_only:
         emit_progress(0.05, "fingerprint")
-        fp = {"version": 1, "anchors": []}
+        fp: Dict[str, object] = {"version": 1, "type": "unknown"}
         if not args.no_fingerprint:
             try:
                 from .detectors import video_fingerprint as vfp_mod
@@ -183,6 +183,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             except Exception as e:
                 print(f"censorcut.analyze: fingerprint pass failed: {e}",
                       file=sys.stderr)
+                fp = {"version": 1, "type": "unknown",
+                       "error": f"exception: {e}"}
         result = {
             "schemaVersion": 1,
             "sourceFile":   str(Path(input_path).resolve()),
@@ -275,7 +277,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     #     per-cut pHash. Scale-invariant (PAL/NTSC tolerant),
     #     codec-invariant, dub-/remaster-invariant. Different cuts
     #     (theatrical / director's / TV) produce different digests.
-    fingerprint = {"version": 1, "anchors": []}
+    fingerprint: Dict[str, object] = {"version": 1, "type": "unknown"}
     if not args.no_fingerprint:
         try:
             from .detectors import video_fingerprint as vfp_mod  # noqa: WPS433
@@ -286,6 +288,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         except Exception as e:
             print(f"censorcut.analyze: fingerprint pass failed: {e}",
                   file=sys.stderr)
+            fingerprint = {"version": 1, "type": "unknown",
+                            "error": f"exception: {e}"}
 
     # 5) Fuse + emit suggestions per category.
     emit_progress(0.95, "fuse")

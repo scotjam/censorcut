@@ -59,6 +59,13 @@ backup/
 # Per-project environment file (Dolt connection config, GH#2520)
 .env
 
+# Issues data — not pushed to the public remote because issue
+# descriptions/notes may reference personal-library files. The Dolt
+# store under .beads/dolt is already gitignored above; this excludes
+# the JSONL mirror too. Existing commits before this change still
+# carry the old data; rewrite history if that matters.
+issues.jsonl
+
 # Legacy files (from pre-Dolt versions)
 *.db
 *.db?*

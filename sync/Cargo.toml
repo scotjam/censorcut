@@ -28,6 +28,7 @@ rand = "0.8"
 # tokio is needed for the async runtime; futures gives us StreamExt.
 iroh = "0.91"
 iroh-gossip = { version = "0.91", features = ["net"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "sync", "signal", "time", "io-util", "process"] }
 futures = "0.3"
 notify = "6"

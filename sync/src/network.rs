@@ -18,11 +18,12 @@ use tokio::sync::Mutex;
 
 use futures::TryStreamExt;
 
-use iroh::{Endpoint, NodeAddr, NodeId};
+use iroh::{Endpoint, NodeAddr, NodeId, protocol::Router};
 use iroh_gossip::{
     api::Event,
     net::Gossip,
     proto::TopicId,
+    ALPN as GOSSIP_ALPN,
 };
 
 use crate::crypto::Identity;
@@ -92,8 +93,32 @@ pub async fn run(opts: GossipOptions) -> Result<()> {
         .await?;
     eprintln!("censorcut-sync: bound iroh node {}",
               endpoint.node_id());
+    // Log the actual UDP sockets we're bound to. Useful for local/
+    // offline-network testing where the n0 relay isn't reachable and
+    // peers need to bootstrap with an explicit `NodeId@host:port`
+    // address. In production we rely on iroh's discovery service to
+    // resolve addresses transparently.
+    for s in endpoint.bound_sockets() {
+        eprintln!("censorcut-sync: bound socket {}", s);
+    }
 
-    let gossip = Gossip::builder().spawn(endpoint.clone());
+    // Default max_message_size in iroh-gossip 0.91 is 4096 bytes — too
+    // small for our feedback rows (a 512-float L2-normalized vector
+    // serialized as JSON is ~7 KB before the wire envelope, signature,
+    // and base64 add another ~600 bytes). Bump to MAX_ROW_BYTES * 2 so
+    // every shape-valid row plus envelope fits.
+    let gossip = Gossip::builder()
+        .max_message_size(crate::schema::MAX_ROW_BYTES * 2)
+        .spawn(endpoint.clone());
+
+    // Register gossip as the protocol handler for the gossip ALPN.
+    // Without this, the endpoint accepts QUIC handshakes on the ALPN
+    // (because we declared it in `.alpns(...)`) but has no dispatcher
+    // to feed incoming connections into the Gossip Engine — incoming
+    // peers stall during the topic mesh handshake.
+    let _router = Router::builder(endpoint.clone())
+        .accept(GOSSIP_ALPN, gossip.clone())
+        .spawn();
 
     let mut bootstrap_nodes = Vec::new();
     for spec in &opts.bootstrap {

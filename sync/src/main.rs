@@ -222,6 +222,14 @@ fn load_schema_cfg(extra_file: Option<&PathBuf>) -> Result<SchemaConfig> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Honour RUST_LOG so iroh / iroh-gossip's internal tracing surfaces
+    // when debugging connectivity. No-op if RUST_LOG isn't set.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")))
+        .with_writer(std::io::stderr)
+        .try_init();
     let cli = Cli::parse();
     let limits = sink::SinkLimits {
         max_total_bytes:                   cli.max_peers_bytes,

@@ -113,7 +113,7 @@ async fn main() -> Result<()> {
                         if schema::verify_signature(&p).is_err() {
                             sig_failures += 1;
                         }
-                        *by_film.entry(p.film_fp.clone()).or_insert(0) += 1;
+                        *by_film.entry(p.film_id.clone()).or_insert(0) += 1;
                     }
                     Err(e) => {
                         malformed += 1;

@@ -14,21 +14,38 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-/// Hard ceiling on the serialized size of one pack.
-pub const MAX_PACK_BYTES: usize = 64 * 1024;
+/// Hard ceiling on the serialized size of one pack. Sized to fit a
+/// keyframes fingerprint (2000 i64 timestamps ~ 18 KB JSON) plus the
+/// cuts list, author key, signature, and any comment with headroom.
+pub const MAX_PACK_BYTES: usize = 128 * 1024;
 
 /// Cap on the number of cut entries per pack.
 pub const MAX_CUTS: usize = 500;
 
-/// Cap on the number of fingerprint anchors carried with the pack.
-/// Equal to the M8.1 anchor count for now (4) but kept as a constant
-/// so a future fingerprint variant can bump it.
-pub const MAX_ANCHORS: usize = 8;
+/// Cap on the number of keyframe timestamps embedded in a F fingerprint.
+/// 20k accommodates very long films with dense keyframes (200 min film
+/// at 1 keyframe / sec = 12k entries). Matches the C++-side cap in
+/// AnalysisResult.cpp.
+pub const MAX_KEYFRAME_TIMES: usize = 20_000;
+
+/// Cap on the number of audio peaks embedded in a v9 fingerprint.
+/// Matches the v9 detector's K=25 default with headroom.
+pub const MAX_PEAKS: usize = 200;
+
+/// Cap on the bucket-key length. The producer typically uses
+/// approxDurationMin as a stringified integer (3-4 chars). Keep the
+/// cap small to make filesystem paths bounded.
+pub const MAX_FILM_ID_LEN: usize = 32;
 
 /// Cap on category-name length and per-cut human comment length.
 pub const MAX_CATEGORY_LEN: usize = 64;
 pub const MAX_REASON_LEN:   usize = 512;
 pub const MAX_COMMENT_LEN:  usize = 4096;
+
+/// Type-tag values for embedded fingerprint. Mirrors the C++ namespace
+/// fp_type::* and the Python video_fingerprint module's type field.
+pub const FP_TYPE_KEYFRAMES:       &str = "keyframes";
+pub const FP_TYPE_AUDIO_PEAK_GAPS: &str = "audio_peak_gaps";
 
 /// Returns true if the character is in our category-name allowlist
 /// (alphanumeric ASCII + space, slash, hyphen, period). Mirrors
@@ -37,19 +54,49 @@ pub fn is_allowed_category_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, ' ' | '/' | '-' | '.')
 }
 
-/// Anchor descriptor we keep with the pack so receivers can verify
-/// the pack is indexed against THEIR copy of the film, not just any
-/// film with the same digest.
-///
-/// Shape matches the video fingerprint v1: `tau` is in [0, 1] (the
-/// scale-invariant body-window position) and `phash` is the
-/// per-cut perceptual hash (16 hex chars = 64 bits).
+/// One peak in a v9-fallback fingerprint. `t_ms` is the absolute time
+/// of the audio peak; `phash` is the averaged-5-frame pHash at that
+/// time (16 hex chars = 64 bits). May be empty when pHash decode
+/// failed for that peak.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct PackAnchor {
-    pub tau:   f32,
+pub struct PackPeak {
+    pub t_ms:  i64,
     pub phash: String,
 }
+
+/// Embedded fingerprint carried with each pack so receivers can verify
+/// the pack is indexed against THEIR copy of the film, not just any
+/// film in the same duration bucket. Shape mirrors the producer's
+/// FilmFingerprint exactly so the C++ side parses it via the same
+/// helper used for analyzer output.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddedFingerprint {
+    pub version: u32,
+    /// One of FP_TYPE_KEYFRAMES or FP_TYPE_AUDIO_PEAK_GAPS.
+    #[serde(rename = "type")]
+    pub fp_type: String,
+    #[serde(rename = "durationMs")]
+    pub duration_ms: i64,
+    #[serde(rename = "approxDurationMin")]
+    pub approx_duration_min: i32,
+
+    // Keyframes variant (omitted for the other type)
+    #[serde(rename = "keyframeTimesMs", default,
+            skip_serializing_if = "Vec::is_empty")]
+    pub keyframe_times_ms: Vec<i64>,
+
+    // AudioPeakGaps variant (omitted for the other type)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peaks: Vec<PackPeak>,
+    #[serde(rename = "gapsMs", default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps_ms: Vec<i64>,
+    #[serde(rename = "innerSpanMs", default, skip_serializing_if = "is_zero")]
+    pub inner_span_ms: i64,
+}
+
+fn is_zero(n: &i64) -> bool { *n == 0 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -81,11 +128,15 @@ pub struct PackCut {
 #[serde(deny_unknown_fields)]
 pub struct EditPack {
     pub schema:       u32,
-    /// SHA-256 hex of the film fingerprint (matches AnalysisResult.fingerprint.digest).
-    pub film_fp:      String,
-    /// Anchors used to index the pack — needed for time-alignment
-    /// across slightly different versions of the film.
-    pub film_anchors: Vec<PackAnchor>,
+    /// Bucket key the server indexes by. Typically the publisher's
+    /// approxDurationMin as a stringified integer (e.g. "87"). Loose
+    /// allowlist: ASCII alphanumeric, `-`, `_`. The fingerprint below
+    /// is what the receiver actually verifies against.
+    pub film_id:      String,
+    /// Producer's full fingerprint. Receivers run their local matcher
+    /// against this to decide whether the pack's cuts apply to their
+    /// copy of the film.
+    pub fingerprint:  EmbeddedFingerprint,
     /// Hex ed25519 pubkey of whoever signed the pack.
     pub author_pubkey: String,
     /// ISO-8601 UTC creation time. Helps receivers prefer fresher packs
@@ -109,8 +160,10 @@ pub enum PackError {
     BadJson(serde_json::Error),
     #[error("unsupported schema {0}")]
     BadSchema(u32),
-    #[error("film_fp must be 64 hex chars, got {0}")]
-    BadFilmFp(usize),
+    #[error("film_id invalid: {0}")]
+    BadFilmId(String),
+    #[error("fingerprint invalid: {0}")]
+    BadFingerprint(String),
     #[error("author_pubkey must be 64 hex chars, got {0}")]
     BadAuthorKey(usize),
     #[error("missing or empty signature")]
@@ -121,14 +174,89 @@ pub enum PackError {
     NotAllowedAuthor,
     #[error("cuts list exceeds {MAX_CUTS} entries")]
     TooManyCuts,
-    #[error("anchors list exceeds {MAX_ANCHORS} entries")]
-    TooManyAnchors,
-    #[error("invalid anchor: {0}")]
-    BadAnchor(String),
     #[error("invalid cut: {0}")]
     BadCut(String),
     #[error("comment too long ({0} > {MAX_COMMENT_LEN})")]
     CommentTooLong(usize),
+}
+
+/// True iff `s` is a safe film_id (bucket key) — non-empty, length-
+/// capped, ASCII alphanumeric + `-` / `_`. Restrictive on purpose so
+/// the id is filesystem-safe (used as a directory name in storage)
+/// and can't smuggle path-traversal sequences.
+pub fn is_valid_film_id(s: &str) -> bool {
+    if s.is_empty() || s.len() > MAX_FILM_ID_LEN { return false; }
+    s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn validate_fingerprint(fp: &EmbeddedFingerprint) -> Result<(), PackError> {
+    if fp.fp_type != FP_TYPE_KEYFRAMES && fp.fp_type != FP_TYPE_AUDIO_PEAK_GAPS {
+        return Err(PackError::BadFingerprint(
+            format!("type must be {:?} or {:?}, got {:?}",
+                    FP_TYPE_KEYFRAMES, FP_TYPE_AUDIO_PEAK_GAPS, fp.fp_type)));
+    }
+    if fp.duration_ms <= 0 {
+        return Err(PackError::BadFingerprint(
+            format!("durationMs must be positive, got {}", fp.duration_ms)));
+    }
+    if fp.fp_type == FP_TYPE_KEYFRAMES {
+        if fp.keyframe_times_ms.is_empty() {
+            return Err(PackError::BadFingerprint(
+                "keyframes variant requires non-empty keyframeTimesMs".into()));
+        }
+        if fp.keyframe_times_ms.len() > MAX_KEYFRAME_TIMES {
+            return Err(PackError::BadFingerprint(
+                format!("keyframeTimesMs exceeds {} entries", MAX_KEYFRAME_TIMES)));
+        }
+        // Timestamps must be sorted ascending and within [0, duration_ms].
+        // Allow a 1-second overshoot at the tail to absorb ffprobe vs
+        // container-duration disagreements.
+        let mut prev: i64 = -1;
+        for &t in &fp.keyframe_times_ms {
+            if t < 0 || t > fp.duration_ms + 1000 {
+                return Err(PackError::BadFingerprint(
+                    format!("keyframe time {t} out of [0, durationMs+1000]")));
+            }
+            if t < prev {
+                return Err(PackError::BadFingerprint(
+                    "keyframeTimesMs not sorted ascending".into()));
+            }
+            prev = t;
+        }
+        // peaks must be empty for the keyframes variant.
+        if !fp.peaks.is_empty() || !fp.gaps_ms.is_empty() {
+            return Err(PackError::BadFingerprint(
+                "keyframes variant must not carry peaks / gapsMs".into()));
+        }
+    } else {
+        if fp.peaks.is_empty() {
+            return Err(PackError::BadFingerprint(
+                "audio_peak_gaps variant requires non-empty peaks".into()));
+        }
+        if fp.peaks.len() > MAX_PEAKS {
+            return Err(PackError::BadFingerprint(
+                format!("peaks exceeds {MAX_PEAKS} entries")));
+        }
+        for p in &fp.peaks {
+            if p.t_ms < 0 || p.t_ms > fp.duration_ms + 1000 {
+                return Err(PackError::BadFingerprint(
+                    format!("peak t_ms {} out of [0, durationMs+1000]", p.t_ms)));
+            }
+            if !p.phash.is_empty()
+                && (p.phash.len() != 16 || hex::decode(&p.phash).is_err())
+            {
+                return Err(PackError::BadFingerprint(
+                    format!("peak phash must be 16 hex or empty, got {:?}",
+                            p.phash)));
+            }
+        }
+        // keyframeTimesMs must be empty for the audio variant.
+        if !fp.keyframe_times_ms.is_empty() {
+            return Err(PackError::BadFingerprint(
+                "audio_peak_gaps variant must not carry keyframeTimesMs".into()));
+        }
+    }
+    Ok(())
 }
 
 /// Strip the signature, render canonically, and return the bytes the
@@ -154,25 +282,13 @@ pub fn validate_shape(raw: &str) -> Result<EditPack, PackError> {
     if pack.schema != 1 {
         return Err(PackError::BadSchema(pack.schema));
     }
-    if pack.film_fp.len() != 64 || hex::decode(&pack.film_fp).is_err() {
-        return Err(PackError::BadFilmFp(pack.film_fp.len()));
+    if !is_valid_film_id(&pack.film_id) {
+        return Err(PackError::BadFilmId(pack.film_id.clone()));
     }
     if pack.author_pubkey.len() != 64 || hex::decode(&pack.author_pubkey).is_err() {
         return Err(PackError::BadAuthorKey(pack.author_pubkey.len()));
     }
-    if pack.film_anchors.len() > MAX_ANCHORS {
-        return Err(PackError::TooManyAnchors);
-    }
-    for a in &pack.film_anchors {
-        if a.phash.len() != 16 || hex::decode(&a.phash).is_err() {
-            return Err(PackError::BadAnchor(format!(
-                "phash must be 16 hex, got {}", a.phash.len())));
-        }
-        if !a.tau.is_finite() || !(0.0..=1.0).contains(&a.tau) {
-            return Err(PackError::BadAnchor(format!(
-                "tau must be finite in [0, 1], got {}", a.tau)));
-        }
-    }
+    validate_fingerprint(&pack.fingerprint)?;
     if pack.cuts.len() > MAX_CUTS {
         return Err(PackError::TooManyCuts);
     }
@@ -243,20 +359,30 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey, SECRET_KEY_LENGTH};
     use rand::rngs::OsRng;
 
-    fn good_anchor(tau: f32, phash: &str) -> PackAnchor {
-        PackAnchor { tau, phash: phash.to_string() }
+    /// 60 monotonically increasing keyframe times that pass
+    /// validate_fingerprint's checks.
+    fn good_keyframes() -> Vec<i64> {
+        (0..60).map(|i| (i * 1000) as i64).collect()
+    }
+
+    fn good_fingerprint() -> EmbeddedFingerprint {
+        EmbeddedFingerprint {
+            version:             1,
+            fp_type:             FP_TYPE_KEYFRAMES.to_string(),
+            duration_ms:         60_000,
+            approx_duration_min: 1,
+            keyframe_times_ms:   good_keyframes(),
+            peaks:               vec![],
+            gaps_ms:             vec![],
+            inner_span_ms:       0,
+        }
     }
 
     fn good_pack() -> EditPack {
         EditPack {
             schema:        1,
-            film_fp:       "0".repeat(64),
-            film_anchors:  vec![
-                good_anchor(0.10, "1111aaaa00001111"),
-                good_anchor(0.30, "2222bbbb00002222"),
-                good_anchor(0.70, "3333cccc00003333"),
-                good_anchor(0.92, "4444dddd00004444"),
-            ],
+            film_id:       "87".to_string(),
+            fingerprint:   good_fingerprint(),
             author_pubkey: "0".repeat(64),
             created_utc:   chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
             cuts:          vec![PackCut {
@@ -290,7 +416,7 @@ mod tests {
         p.author_pubkey = hex::encode(sk.verifying_key().to_bytes());
         sign(&mut p, &sk);
         let raw = serde_json::to_string(&p).unwrap();
-        assert_eq!(validate_shape(&raw).unwrap().film_fp, p.film_fp);
+        assert_eq!(validate_shape(&raw).unwrap().film_id, p.film_id);
     }
 
     #[test]
@@ -302,16 +428,56 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_fingerprint_or_author() {
+    fn rejects_bad_film_id_or_author() {
         let mut p = good_pack();
-        p.film_fp = "abc".to_string();
+        p.film_id = "../etc/passwd".to_string();
         let raw = serde_json::to_string(&p).unwrap();
-        assert!(matches!(validate_shape(&raw), Err(PackError::BadFilmFp(_))));
+        assert!(matches!(validate_shape(&raw), Err(PackError::BadFilmId(_))));
+
+        let mut p = good_pack();
+        p.film_id = "".to_string();
+        let raw = serde_json::to_string(&p).unwrap();
+        assert!(matches!(validate_shape(&raw), Err(PackError::BadFilmId(_))));
 
         let mut p = good_pack();
         p.author_pubkey = "not hex!".repeat(8);
         let raw = serde_json::to_string(&p).unwrap();
         assert!(matches!(validate_shape(&raw), Err(PackError::BadAuthorKey(_))));
+    }
+
+    #[test]
+    fn rejects_bad_fingerprint_shape() {
+        // type=keyframes but no keyframeTimesMs → fail
+        let mut p = good_pack();
+        p.fingerprint.keyframe_times_ms = vec![];
+        let raw = serde_json::to_string(&p).unwrap();
+        assert!(matches!(validate_shape(&raw), Err(PackError::BadFingerprint(_))));
+
+        // type=audio_peak_gaps with peaks
+        let mut p = good_pack();
+        p.fingerprint = EmbeddedFingerprint {
+            version: 1,
+            fp_type: FP_TYPE_AUDIO_PEAK_GAPS.to_string(),
+            duration_ms: 60_000,
+            approx_duration_min: 1,
+            keyframe_times_ms: vec![],
+            peaks: vec![PackPeak { t_ms: 10_000, phash: "1111aaaa00001111".to_string() },
+                          PackPeak { t_ms: 30_000, phash: "2222bbbb00002222".to_string() },
+                          PackPeak { t_ms: 50_000, phash: "3333cccc00003333".to_string() }],
+            gaps_ms: vec![],
+            inner_span_ms: 0,
+        };
+        let sk = fresh_keypair();
+        p.author_pubkey = hex::encode(sk.verifying_key().to_bytes());
+        sign(&mut p, &sk);
+        let raw = serde_json::to_string(&p).unwrap();
+        assert!(validate_shape(&raw).is_ok());
+
+        // Unsorted keyframes → fail
+        let mut p = good_pack();
+        p.fingerprint.keyframe_times_ms = vec![1000, 500, 2000];
+        let raw = serde_json::to_string(&p).unwrap();
+        assert!(matches!(validate_shape(&raw), Err(PackError::BadFingerprint(_))));
     }
 
     #[test]
@@ -366,8 +532,8 @@ mod tests {
         let mut p = good_pack();
         p.author_pubkey = hex::encode(sk.verifying_key().to_bytes());
         sign(&mut p, &sk);
-        // Tamper with film_fp after signing — verify must catch it.
-        p.film_fp = "f".repeat(64);
+        // Tamper with film_id after signing — verify must catch it.
+        p.film_id = "99".to_string();
         assert!(matches!(verify_signature(&p), Err(PackError::BadSig)));
     }
 

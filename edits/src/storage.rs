@@ -2,14 +2,16 @@
 //!
 //! Storage shape:
 //!     <data-dir>/
-//!         <film-fp>/                    # 64-hex film fingerprint
-//!             <author-pubkey>.json       # one pack per (film, author)
+//!         <film-id>/                    # short bucket key (approxDurationMin)
+//!             <author-pubkey>.json       # one pack per (film_id, author)
 //!
-//! Why (fp, author) keys: a single film can have packs from multiple
+//! Why (film_id, author) keys: a single film can have packs from multiple
 //! publishers (e.g. one pack that's "edits for under-5", another for
 //! "under-9"); replacing your own pack overwrites your own file but
-//! never clobbers anyone else's. SHA-256 hex / hex pubkeys are
-//! filesystem-safe everywhere, so no escaping is needed.
+//! never clobbers anyone else's. The film_id is validated by
+//! schema::is_valid_film_id before being used as a directory name —
+//! it's restricted to ASCII alphanumeric + `-` / `_`, so no path
+//! traversal is possible. Hex pubkeys are filesystem-safe everywhere.
 
 use std::path::{Path, PathBuf};
 
@@ -39,8 +41,8 @@ impl Repo {
         Ok(Self { data_dir: data_dir.to_path_buf() })
     }
 
-    pub fn pack_path(&self, film_fp: &str, author_pubkey: &str) -> PathBuf {
-        self.data_dir.join(film_fp).join(format!("{}.json", author_pubkey))
+    pub fn pack_path(&self, film_id: &str, author_pubkey: &str) -> PathBuf {
+        self.data_dir.join(film_id).join(format!("{}.json", author_pubkey))
     }
 
     /// Write a pack, replacing any existing pack from the same author
@@ -48,9 +50,9 @@ impl Repo {
     /// validated the pack via `schema::validate_shape` and
     /// `schema::verify_signature`.
     pub fn put(&self, pack: &EditPack) -> Result<PathBuf, StorageError> {
-        let dir = self.data_dir.join(&pack.film_fp);
+        let dir = self.data_dir.join(&pack.film_id);
         std::fs::create_dir_all(&dir)?;
-        let path = self.pack_path(&pack.film_fp, &pack.author_pubkey);
+        let path = self.pack_path(&pack.film_id, &pack.author_pubkey);
         let json = serde_json::to_vec(pack)
             .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
@@ -61,10 +63,10 @@ impl Repo {
         Ok(path)
     }
 
-    /// Read every pack for the given fingerprint. Skips files that no
+    /// Read every pack with the given film_id. Skips files that no
     /// longer parse cleanly (rather than aborting the whole listing).
-    pub fn list_for_fingerprint(&self, film_fp: &str) -> Result<Vec<EditPack>, StorageError> {
-        let dir = self.data_dir.join(film_fp);
+    pub fn list_for_film_id(&self, film_id: &str) -> Result<Vec<EditPack>, StorageError> {
+        let dir = self.data_dir.join(film_id);
         if !dir.exists() { return Ok(Vec::new()); }
         let mut out = Vec::new();
         for entry in std::fs::read_dir(&dir)? {
@@ -77,7 +79,7 @@ impl Repo {
             };
             match validate_shape(&raw) {
                 Ok(p)  => {
-                    if p.film_fp == film_fp { out.push(p); }
+                    if p.film_id == film_id { out.push(p); }
                 }
                 Err(_) => continue,
             }
@@ -99,19 +101,33 @@ impl Repo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{canonical_signed_bytes, EditPack, PackAnchor, PackCut};
+    use crate::schema::{
+        canonical_signed_bytes, EditPack, EmbeddedFingerprint, PackCut,
+        FP_TYPE_KEYFRAMES,
+    };
     use chrono::TimeZone;
     use ed25519_dalek::{Signer, SigningKey};
     use rand::rngs::OsRng;
     use tempfile::tempdir;
 
-    fn pack_with_author(film_fp: &str, sk: &SigningKey) -> EditPack {
+    fn good_fingerprint() -> EmbeddedFingerprint {
+        EmbeddedFingerprint {
+            version: 1,
+            fp_type: FP_TYPE_KEYFRAMES.to_string(),
+            duration_ms: 60_000,
+            approx_duration_min: 1,
+            keyframe_times_ms: (0..60).map(|i| i as i64 * 1000).collect(),
+            peaks: vec![],
+            gaps_ms: vec![],
+            inner_span_ms: 0,
+        }
+    }
+
+    fn pack_with_author(film_id: &str, sk: &SigningKey) -> EditPack {
         let mut p = EditPack {
             schema:        1,
-            film_fp:       film_fp.to_string(),
-            film_anchors:  vec![PackAnchor {
-                tau: 0.10, phash: "1111aaaa00001111".to_string(),
-            }],
+            film_id:       film_id.to_string(),
+            fingerprint:   good_fingerprint(),
             author_pubkey: hex::encode(sk.verifying_key().to_bytes()),
             created_utc:   chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
             cuts:          vec![PackCut {
@@ -122,7 +138,6 @@ mod tests {
             comment:       None,
             sig:           None,
         };
-        // Sign.
         use base64::Engine;
         let bytes = canonical_signed_bytes(&p).unwrap();
         let sig = sk.sign(&bytes);
@@ -136,12 +151,12 @@ mod tests {
         let repo = Repo::open(dir.path()).unwrap();
         let sk1 = SigningKey::generate(&mut OsRng);
         let sk2 = SigningKey::generate(&mut OsRng);
-        let film = "a".repeat(64);
-        let p1 = pack_with_author(&film, &sk1);
-        let p2 = pack_with_author(&film, &sk2);
+        let film = "87";
+        let p1 = pack_with_author(film, &sk1);
+        let p2 = pack_with_author(film, &sk2);
         repo.put(&p1).unwrap();
         repo.put(&p2).unwrap();
-        let listed = repo.list_for_fingerprint(&film).unwrap();
+        let listed = repo.list_for_film_id(film).unwrap();
         assert_eq!(listed.len(), 2);
         let pubkeys: std::collections::HashSet<_> =
             listed.iter().map(|p| p.author_pubkey.clone()).collect();
@@ -154,19 +169,17 @@ mod tests {
         let dir = tempdir().unwrap();
         let repo = Repo::open(dir.path()).unwrap();
         let sk = SigningKey::generate(&mut OsRng);
-        let film = "b".repeat(64);
-        let mut p = pack_with_author(&film, &sk);
+        let film = "62";
+        let mut p = pack_with_author(film, &sk);
         repo.put(&p).unwrap();
-        // Replace with a newer pack from the same author.
         p.created_utc = p.created_utc + chrono::Duration::days(1);
-        // re-sign over the new bytes
         use base64::Engine;
         p.sig = None;
         let bytes = canonical_signed_bytes(&p).unwrap();
         let sig = sk.sign(&bytes);
         p.sig = Some(base64::engine::general_purpose::STANDARD.encode(sig.to_bytes()));
         repo.put(&p).unwrap();
-        let listed = repo.list_for_fingerprint(&film).unwrap();
+        let listed = repo.list_for_film_id(film).unwrap();
         assert_eq!(listed.len(), 1);
     }
 
@@ -175,21 +188,20 @@ mod tests {
         let dir = tempdir().unwrap();
         let repo = Repo::open(dir.path()).unwrap();
         let sk = SigningKey::generate(&mut OsRng);
-        let film = "c".repeat(64);
-        let p = pack_with_author(&film, &sk);
+        let film = "99";
+        let p = pack_with_author(film, &sk);
         repo.put(&p).unwrap();
-        // Drop a junk file alongside.
-        let jpath = dir.path().join(&film).join("notapack.json");
+        let jpath = dir.path().join(film).join("notapack.json");
         std::fs::write(&jpath, "}}}}garbage").unwrap();
-        let listed = repo.list_for_fingerprint(&film).unwrap();
+        let listed = repo.list_for_film_id(film).unwrap();
         assert_eq!(listed.len(), 1);
     }
 
     #[test]
-    fn list_empty_for_unknown_fingerprint() {
+    fn list_empty_for_unknown_film_id() {
         let dir = tempdir().unwrap();
         let repo = Repo::open(dir.path()).unwrap();
-        let listed = repo.list_for_fingerprint(&"d".repeat(64)).unwrap();
+        let listed = repo.list_for_film_id("unknown").unwrap();
         assert!(listed.is_empty());
     }
 }

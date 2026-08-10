@@ -27,6 +27,10 @@ constexpr libvlc_event_e kEvents[] = {
 // that the playhead reads as smooth, cheap enough to be irrelevant.
 constexpr int kPollIntervalMs = 40;
 
+// How long to give the demuxer to settle before reading back a seek's true
+// landing time.
+constexpr int kSeekSettleMs = 150;
+
 } // namespace
 
 PlaybackController::PlaybackController(QObject* parent)
@@ -39,9 +43,28 @@ PlaybackController::PlaybackController(QObject* parent)
         emitPosition(libvlc_media_player_get_time(m_player));
     });
 
-    // No options passed — VLC will use defaults. Add `--no-video-title-show`
-    // here if the title overlay is annoying during playback.
-    static const char* args[] = { "--no-video-title-show", "--quiet" };
+    // libvlc_new reads the machine's VLC configuration, so anything the user
+    // has set in their VLC preferences leaks in here. Seek behaviour has to be
+    // deterministic — marker times come from libvlc_media_player_get_time()
+    // after a seek (see MainWindow's `[`/`]` handling), so a sloppy seek does
+    // not just look wrong, it records the wrong cut point.
+    //
+    //   --no-input-fast-seek  demux to the keyframe before the target, then
+    //                         decode forward to the exact time. This is VLC's
+    //                         default; pinning it stops a user's preference
+    //                         for fast seeking from snapping our marks to the
+    //                         nearest keyframe (seconds away on long-GOP
+    //                         encodes).
+    //   --avi-index=1         AVIs with a missing or broken index normally
+    //                         raise a "try to fix it?" dialog, which libvlc
+    //                         has no provider for — so seeking silently stays
+    //                         broken. 1 = always rebuild the index.
+    static const char* args[] = {
+        "--no-video-title-show",
+        "--quiet",
+        "--no-input-fast-seek",
+        "--avi-index=1",
+    };
     m_vlc = libvlc_new(static_cast<int>(std::size(args)), args);
     if (!m_vlc) {
         qWarning() << "libvlc_new failed";
@@ -141,11 +164,18 @@ void PlaybackController::seek(qint64 ms)
 {
     if (!m_player) return;
     libvlc_media_player_set_time(m_player, ms);
-    // Report the seek target straight away rather than waiting up to a poll
-    // interval for the clock to catch up. Note the player may land on a
-    // nearby keyframe for containers without a fine index; the next poll
-    // corrects the value if so.
+
+    // Report the seek target straight away so the UI is responsive rather than
+    // waiting a poll interval for the clock to catch up...
     emitPosition(ms);
+
+    // ...then reconcile with where the player actually landed. While playing
+    // the poll timer would do this anyway, but while paused nothing else reads
+    // the clock, and marker times come from position() — so without this the
+    // recorded cut point could disagree with the frame on screen.
+    QTimer::singleShot(kSeekSettleMs, this, [this]{
+        if (m_player) emitPosition(libvlc_media_player_get_time(m_player));
+    });
 }
 
 void PlaybackController::seekRelative(qint64 deltaMs)

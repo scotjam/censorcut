@@ -336,10 +336,67 @@ Entry point: `python -m censorcut.analyze --input <path> --out <json> --profile 
 - **Profile aggressiveness compounds with movie choice.** A G-rated Pixar film at "Under 5" can produce 15–20% cuts; a PG action film at "Under 5" produces a different movie. Surface percentage upfront so parents can decide whether to switch films instead.
 - **Frame stepping in libVLC is asymmetric.** Forward is exact; backward is approximate (seek-based). Users will need to nudge for tight marks.
 - **CLIP is not a classifier — it's a similarity scorer.** Vision-detected categories will need per-prompt threshold tuning; expect false positives from visually-similar-but-benign frames.
+- **A censor shortcut does not censor the file.** It changes what a configured player does. The original remains on disk and plays uncut in anything else — see §11.6. Only the exported copy is censored regardless of what opens it.
 
 ---
 
-## 11. Project layout
+## 11. Non-destructive playback (M10)
+
+Export produces a standalone censored file. That is the right default — it is censored no matter what opens it — but it costs an encode of the whole film and a second copy per age profile. M10 adds an alternative: leave the movie alone and describe the cuts in a small file that players honour.
+
+### 11.1 The edit list
+
+`<movie>.censorcut-edl.json`, beside the movie, written by `EditList::writeShortcutFor` (`src/core/EditList.{h,cpp}`).
+
+**One file per movie, holding every age profile.** Not one file per age: a player only knows the movie's path and has no way to guess which age-suffixed file to load. Keeping the profiles together also means generating age 11 never invalidates age 5 — `writeShortcutFor` upserts by profile id.
+
+**Cuts are written already resolved.** Marker status and the age profile have been applied, so a player never sees pending or rejected markers and never reimplements category thresholds. The ranges come from `mergedConfirmedCuts()` — the same function the encoder uses — so a shortcut and an encoded copy remove exactly the same footage. If the two ever disagree, the same film is censored differently depending on how it is watched.
+
+**A source-hash mismatch discards the stored profiles** rather than carrying forward cuts that would land in the wrong scenes.
+
+### 11.2 Lead-in
+
+Every cut is treated as starting `leadInMs` (default 150) early. Two independent reasons, both measured:
+
+- Players that poll the clock (the VLC script, Jellyfin's client-side mode) always notice entry into a cut late. Starting early gives up a fraction of a second of clean footage instead of showing the first frames of the scene being removed.
+- On the server-side path, an ffmpeg concat `outpoint` includes the frame sitting exactly on it. With a zero lead-in, one or two frames of every cut survive.
+
+### 11.3 VLC
+
+`players/vlc/censorcut.lua`, a `lua/intf` interface script. It resolves the playing file to its edit list, polls position, and seeks past each cut itself — not via playlist `start-time`/`stop-time`, which would leave a gap at every boundary and depend on the viewer's own VLC configuration.
+
+It calibrates the time unit against the item duration rather than assuming microseconds, and an unknown profile id falls back to the *strictest* profile, never to no censoring.
+
+### 11.4 Jellyfin — server-side (default)
+
+An `IMediaSourceProvider` offering a second version of the movie whose stream the server cuts. `SupportsDirectPlay` and `SupportsDirectStream` are both false, so Jellyfin always runs it through ffmpeg. No client is party to the decision, so none can bypass it.
+
+The source is a generated `.ffconcat` script. Four constraints, each measured against ffmpeg 8.1 rather than assumed, each one load-bearing:
+
+| Constraint | Why |
+|---|---|
+| Keep-segment starts cannot use a raw `inpoint` | A non-keyframe `inpoint` rewinds to the **preceding** keyframe — a 6.6 s replay of the cut scene in testing |
+| Boundary chunks must match the source **codec** | A mismatched codec corrupts the *following* entry's in/out points |
+| Boundary chunks must match the source **container** | A different timebase produces non-monotonic timestamps and **silently drops the chunk** — 164 frames vanished with a zero exit code |
+| Script and chunks must sit beside the movie | ffmpeg rejects absolute paths inside a concat script as unsafe, and `-safe 0` is not ours to add inside Jellyfin |
+
+Resume points are frame-exact via smart rendering: the partial GOP between the true resume point and the next keyframe is re-encoded into a small chunk, and everything from that keyframe onward is referenced from the original untouched. Snapping the resume forward to the keyframe instead would be safe but would discard up to a whole GOP of wanted footage after every cut.
+
+A source whose codec has no matching encoder, or a movie directory that is not writable, yields **no censored version** rather than a wrong one.
+
+### 11.5 Jellyfin — client-side
+
+Reports the cuts as media segments and lets the client skip them. Cheaper, since the original can still direct play, but **a client without automatic skipping plays the film uncut** — it fails open, which is the wrong direction for this tool. Retained as an option, not the default.
+
+Exactly one mode runs at a time. Both together would have the client skip forward inside an already-cut stream, jumping past wanted scenes.
+
+### 11.6 What a shortcut does not do
+
+The original stays on disk, uncut and directly playable. A shortcut changes what a *player* does; it does not change what is on disk. Where a child may reach the file unsupervised, the encoded copy is the answer, and the UI says so at the point of choice.
+
+---
+
+## 12. Project layout
 
 ```
 censorcut/
@@ -350,6 +407,14 @@ censorcut/
 │   └── PLAN.md                 # this file
 ├── third_party/
 │   └── ffmpeg/                 # bundled binaries on Win/macOS
+├── players/                    # M10 — see §11
+│   ├── README.md               # install steps + what a shortcut can't do
+│   ├── vlc/
+│   │   ├── censorcut.lua       # lua/intf script
+│   │   └── test_censorcut.lua  # runs under any lua 5.1+
+│   └── jellyfin/
+│       ├── Jellyfin.Plugin.CensorCut/
+│       └── Jellyfin.Plugin.CensorCut.Tests/
 ├── python/
 │   ├── pyproject.toml
 │   └── censorcut/
@@ -396,7 +461,7 @@ censorcut/
 
 ---
 
-## 12. Build milestones
+## 13. Build milestones
 
 | # | What | Effort |
 |---|---|---|
@@ -407,12 +472,13 @@ censorcut/
 | **M4.5** | Category editor UI: custom categories, label autocomplete, weight tuning, custom age profiles | 1 weekend |
 | **M5** | CLIP vision detector activates Cruelty, Pushing, visual halves of Sword/Chase/Violence | 1–2 weekends |
 | **M6** | Whisper dialogue detector activates Kill/threat; bonus language filtering | 1–2 weekends |
+| **M10** | Non-destructive playback (§11): shared edit-list format, VLC interface script, Jellyfin plugin cutting server-side. No re-encode, no second copy per age. | 1–2 weekends |
 
 Building age profiles in M3 even when half the categories are stubs is worth doing — it's the user's mental model from day one, and retrofitting later means rebuilding the analyzer panel.
 
 ---
 
-## 13. Decisions to confirm before scaffolding
+## 14. Decisions to confirm before scaffolding
 
 1. **Single-window, one movie at a time** — yes (recommended for simplicity)
 2. **Sidecar location** — next to movie, fallback to app data when read-only (recommended)

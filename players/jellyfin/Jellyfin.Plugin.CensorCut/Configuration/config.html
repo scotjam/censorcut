@@ -41,10 +41,10 @@
                     <input is="emby-input" type="number" id="KeyframeSearchWindowSeconds"
                            name="KeyframeSearchWindowSeconds" min="1" step="1" />
                     <div class="fieldDescription">
-                        Server mode only. Playback has to resume on a keyframe, so each cut ends at
-                        the first keyframe after it — never before, which would replay the scene
-                        being removed. This bounds how far ahead to look; if no keyframe is found
-                        within it, no censored version is offered rather than an unsafe one.
+                        Server mode only. Cuts are frame-exact: the partial GOP after each cut is
+                        re-encoded into a small chunk and the rest is referenced from the original
+                        untouched. This bounds how far ahead to look for the keyframe that ends
+                        that chunk.
                     </div>
                 </div>
 

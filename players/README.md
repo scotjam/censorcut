@@ -73,18 +73,28 @@ what makes it impossible to bypass — and also means it always transcodes, so
 it costs CPU while playing.
 
 The plugin writes a small `.censorcut.ffconcat` script beside each movie listing
-the ranges to keep. It has to live there: ffmpeg rejects absolute paths inside a
-concat script as unsafe, and `-safe 0` is not ours to add inside Jellyfin. **The
-media directory must be writable.** If it is not, no censored version is offered
-and the reason is logged.
+the ranges to keep, plus one short chunk file per cut (see below). They have to
+live there: ffmpeg rejects absolute paths inside a concat script as unsafe, and
+`-safe 0` is not ours to add inside Jellyfin. **The media directory must be
+writable.** If it is not, no censored version is offered and the reason is
+logged.
 
-Resume points land on a keyframe. A concat `inpoint` that is not on one rewinds
-to the *preceding* keyframe, which would replay the end of the scene being cut,
-so each cut is extended forward to the next keyframe instead. That can discard a
-little wanted footage after a cut — in practice often none, because cuts tend to
-end at scene changes and that is exactly where encoders put keyframes. If no
-keyframe is found within the search window, the censored version is withheld
-rather than offered unsafely.
+**Cuts are frame-exact.** Getting there takes one trick. Playback can only be
+referenced from a keyframe, and a concat `inpoint` that is not on one rewinds to
+the *preceding* keyframe — which would replay the end of the scene being cut.
+Snapping the resume forward to the next keyframe instead would be safe but would
+throw away up to a whole GOP of wanted footage after every cut. So the partial
+group of pictures between the true resume point and the next keyframe is
+re-encoded into a small chunk, and everything from that keyframe onward is
+referenced from the original untouched. Resume is exact, and the re-encoded part
+is a few seconds per cut rather than the whole film.
+
+Chunks are named after the exact range they cover, so they are reused across
+restarts and regenerated only when the cuts change. They must match the source's
+codec and container: a mismatched codec was measured to corrupt the following
+entry's in/out points, and a mismatched container to drop the chunk from the
+output entirely. A source whose codec has no matching encoder gets no censored
+version rather than a wrong one.
 
 ### Client-side mode
 
@@ -99,8 +109,9 @@ forward inside a stream the server had already cut, jumping past wanted scenes.
 ### Settings
 
 - **Where cutting happens** — server-side or client-side, as above.
-- **Keyframe search window** — how far past a cut to look for the resume
-  keyframe. Server mode only.
+- **Keyframe search window** — how far past a cut to look for the keyframe that
+  ends the re-encoded chunk. Server mode only; a larger window means a longer
+  probe, a smaller one risks re-encoding more than necessary.
 - **Report cuts as** — which of Jellyfin's five segment types the cuts borrow;
   it has no "censored" type. Client mode only.
 - **Age profile** — which profile to apply, e.g. `age-7`. Empty uses each
@@ -118,9 +129,15 @@ dotnet test
 
 ## Why cuts start slightly early
 
-Both integrations begin a skip `leadInMs` *before* the cut's real start. A
-player only notices it has entered a cut by checking the clock periodically, so
-it always notices late. Starting early gives up a fraction of a second of clean
-footage; starting on time would show the opening frames of the scene being
-removed. For this tool that trade is the obvious one, and the amount is
-adjustable per edit list.
+Every integration begins a cut `leadInMs` *before* its real start, and the
+reason differs by mode:
+
+- **VLC and client-side Jellyfin** notice they have entered a cut only by
+  checking the clock periodically, so they always notice late. Starting early
+  gives up a fraction of a second of clean footage; starting on time would show
+  the opening frames of the scene being removed.
+- **Server-side Jellyfin** is frame-exact, but a concat `outpoint` includes the
+  frame sitting exactly on it. With no lead-in, one or two frames of every cut
+  survive — measured, not theorised. The lead-in absorbs that overshoot.
+
+The amount is stored per edit list and can be overridden in the Jellyfin plugin.

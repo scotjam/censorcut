@@ -92,8 +92,8 @@ public class CensorCutMediaSourceProvider : IMediaSourceProvider
                 return Array.Empty<MediaSourceInfo>();
             }
 
-            var (scriptPath, keeps) = built.Value;
-            var keptMs = keeps.Sum(k => k.DurationMs);
+            var (scriptPath, plan) = built.Value;
+            var keptMs = plan.Sum(e => e.DurationMs);
 
             var source = new MediaSourceInfo
             {
@@ -143,38 +143,29 @@ public class CensorCutMediaSourceProvider : IMediaSourceProvider
 
     private async Task<IReadOnlyList<long>> KeyframesAsync(
         string mediaPath,
-        EditProfile profile,
+        IReadOnlyList<KeepSegment> keeps,
         PluginConfiguration config,
         CancellationToken cancellationToken)
     {
-        var cutEnds = profile.Cuts
-            .Where(c => c.EndMs > c.StartMs)
-            .Select(c => c.EndMs)
+        // Each keep-segment needs the first keyframe at or after its start, so
+        // those are the only windows worth reading. A whole-file keyframe scan
+        // means demuxing the entire movie.
+        var starts = keeps
+            .Where(k => k.DurationMs > 0)
+            .Select(k => k.StartMs)
             .Distinct()
             .OrderBy(ms => ms)
             .ToList();
 
-        var keyframes = await KeyframeProbe.FindKeyframesAsync(
+        return await KeyframeProbe.FindKeyframesAsync(
             _mediaEncoder.ProbePath,
             mediaPath,
-            cutEnds,
+            starts,
             config.KeyframeSearchWindowSeconds,
             cancellationToken).ConfigureAwait(false);
-
-        if (keyframes.Count == 0)
-        {
-            // Without a keyframe index an inpoint would snap backward into the
-            // scene we are removing. Refusing is the only safe answer.
-            _logger.LogError(
-                "CensorCut: keyframe probe found nothing for {Path}; refusing to offer a censored version "
-                + "rather than risk replaying cut content",
-                mediaPath);
-        }
-
-        return keyframes;
     }
 
-    private async Task<(string ScriptPath, IReadOnlyList<KeepSegment> Keeps)?> BuildScriptAsync(
+    private async Task<(string ScriptPath, IReadOnlyList<PlanEntry> Plan)?> BuildScriptAsync(
         string mediaPath,
         EditProfile profile,
         long durationMs,
@@ -182,39 +173,94 @@ public class CensorCutMediaSourceProvider : IMediaSourceProvider
         PluginConfiguration config,
         CancellationToken cancellationToken)
     {
-        var keyframes = await KeyframesAsync(mediaPath, profile, config, cancellationToken).ConfigureAwait(false);
-        if (keyframes.Count == 0)
-        {
-            return null;
-        }
-
-        var keeps = FfconcatBuilder.BuildKeepSegments(profile.Cuts, durationMs, leadInMs, keyframes);
+        var keeps = FfconcatBuilder.BuildKeepSegments(profile.Cuts, durationMs, leadInMs);
         if (keeps.Count == 0)
         {
             _logger.LogWarning("CensorCut: every second of {Path} is cut; nothing to play", mediaPath);
             return null;
         }
 
-        var fileName = Path.GetFileName(mediaPath);
-        var text = FfconcatBuilder.Render(fileName, keeps);
+        var format = await BoundaryRenderer.ProbeFormatAsync(
+            _mediaEncoder.ProbePath, mediaPath, cancellationToken).ConfigureAwait(false);
+        if (!BoundaryRenderer.CanRender(format))
+        {
+            _logger.LogError(
+                "CensorCut: no matching encoder for {Path} (video {Video}, audio {Audio}); "
+                + "refusing rather than splicing a mismatched chunk",
+                mediaPath,
+                format?.VideoCodec,
+                format?.AudioCodec);
+            return null;
+        }
 
-        var scriptPath = Path.Combine(
-            Path.GetDirectoryName(mediaPath) ?? string.Empty,
-            fileName + "." + profile.Id + ".censorcut.ffconcat");
+        var keyframes = await KeyframesAsync(mediaPath, keeps, config, cancellationToken).ConfigureAwait(false);
+        var plan = FfconcatBuilder.BuildPlan(keeps, keyframes);
+        if (plan.Count == 0)
+        {
+            return null;
+        }
 
-        // Rewrite only when the content actually changed, so a library scan
-        // does not keep touching files in the media directory.
+        var mediaFileName = Path.GetFileName(mediaPath);
+        var directory = Path.GetDirectoryName(mediaPath) ?? string.Empty;
+
+        string ChunkName(PlanEntry entry) => string.Create(
+            CultureInfo.InvariantCulture,
+            $"{mediaFileName}.{profile.Id}.{entry.StartMs}-{entry.EndMs}.censorcut{BoundaryRenderer.ChunkExtensionFor(mediaPath)}");
+
+        // Render the partial GOP at each resume point. Everything else is
+        // referenced from the original and never re-encoded.
+        foreach (var entry in plan)
+        {
+            if (entry.Kind != PlanEntryKind.Rendered)
+            {
+                continue;
+            }
+
+            var chunkPath = Path.Combine(directory, ChunkName(entry));
+            if (File.Exists(chunkPath) && new FileInfo(chunkPath).Length > 0)
+            {
+                continue;  // name encodes the exact range, so an existing file is current
+            }
+
+            var rendered = await BoundaryRenderer.RenderAsync(
+                _mediaEncoder.EncoderPath, mediaPath, entry, format!, chunkPath, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!rendered)
+            {
+                _logger.LogError(
+                    "CensorCut: failed to render the boundary chunk {Start}-{End} ms for {Path}",
+                    entry.StartMs,
+                    entry.EndMs,
+                    mediaPath);
+                return null;
+            }
+
+            _logger.LogInformation(
+                "CensorCut: rendered {Ms} ms boundary chunk at {Start} ms for {Path}",
+                entry.DurationMs,
+                entry.StartMs,
+                mediaPath);
+        }
+
+        var text = FfconcatBuilder.Render(mediaFileName, plan, ChunkName);
+        var scriptPath = Path.Combine(directory, mediaFileName + "." + profile.Id + ".censorcut.ffconcat");
+
         if (!File.Exists(scriptPath)
-            || !string.Equals(await File.ReadAllTextAsync(scriptPath, cancellationToken).ConfigureAwait(false), text, StringComparison.Ordinal))
+            || !string.Equals(
+                await File.ReadAllTextAsync(scriptPath, cancellationToken).ConfigureAwait(false),
+                text,
+                StringComparison.Ordinal))
         {
             await File.WriteAllTextAsync(scriptPath, text, cancellationToken).ConfigureAwait(false);
             _logger.LogInformation(
-                "CensorCut: wrote {Script} with {Count} kept ranges",
+                "CensorCut: wrote {Script} ({Total} entries, {Rendered} re-encoded)",
                 scriptPath,
-                keeps.Count);
+                plan.Count,
+                plan.Count(e => e.Kind == PlanEntryKind.Rendered));
         }
 
-        return (scriptPath, keeps);
+        return (scriptPath, plan);
     }
 
     private static string DeterministicSourceId(Guid itemId, string? profileId)

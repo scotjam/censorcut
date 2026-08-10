@@ -18,57 +18,76 @@ public readonly record struct KeepSegment(long StartMs, long EndMs)
 }
 
 /// <summary>
-/// Turns an edit list into an ffmpeg concat-demuxer script that plays only the
-/// kept ranges of the original file.
+/// How a piece of the censored version is produced.
+/// </summary>
+public enum PlanEntryKind
+{
+    /// <summary>
+    /// Taken from the original file untouched, via keyframe-aligned in/out
+    /// points. No re-encoding, bit-identical output.
+    /// </summary>
+    Original = 0,
+
+    /// <summary>
+    /// Re-encoded into a small file because it starts mid-GOP. Only the
+    /// partial group of pictures at a resume point needs this.
+    /// </summary>
+    Rendered = 1,
+}
+
+/// <summary>
+/// One entry in the concat script.
+/// </summary>
+/// <param name="Kind">Whether this piece is referenced or re-encoded.</param>
+/// <param name="StartMs">Inclusive start in the source, in milliseconds.</param>
+/// <param name="EndMs">Exclusive end in the source, in milliseconds.</param>
+public readonly record struct PlanEntry(PlanEntryKind Kind, long StartMs, long EndMs)
+{
+    /// <summary>Gets the entry length in milliseconds.</summary>
+    public long DurationMs => EndMs - StartMs;
+}
+
+/// <summary>
+/// Turns an edit list into an ffmpeg concat-demuxer script that plays exactly
+/// the kept ranges of the original file.
 /// </summary>
 /// <remarks>
-/// Two measured properties of the concat demuxer drive the rules here:
-/// <list type="bullet">
-/// <item>
-/// <c>inpoint</c> at a non-keyframe snaps <i>backward</i> to the preceding
-/// keyframe. A keep-segment starts where a cut ends, so an unsnapped inpoint
-/// would replay the tail of the very scene being removed. Starts are therefore
-/// moved <i>forward</i> to the next keyframe, which can only ever discard
-/// wanted footage, never reveal unwanted footage.
-/// </item>
-/// <item>
-/// <c>outpoint</c> is accurate to within a frame, and keep-segments already end
-/// a lead-in ahead of the cut, so the overshoot stays inside that margin.
-/// </item>
-/// </list>
+/// <para>
+/// A concat <c>inpoint</c> that is not on a keyframe rewinds to the preceding
+/// keyframe, which would replay the tail of the scene being cut. Snapping the
+/// resume point forward to the next keyframe would avoid that but throws away
+/// wanted footage — up to a whole GOP after every cut.
+/// </para>
+/// <para>
+/// So the boundary is smart-rendered instead: the partial GOP between the true
+/// resume point and the next keyframe is re-encoded into a small file, and
+/// everything from that keyframe onward is referenced from the original
+/// untouched. Resume points are frame-exact, and the re-encoded portion is a
+/// few seconds per cut rather than the whole film.
+/// </para>
 /// </remarks>
 public static class FfconcatBuilder
 {
     /// <summary>
-    /// Computes the ranges to keep, given the cuts and the source's keyframe
-    /// positions.
+    /// Computes the ranges to keep — the exact complement of the cuts, with
+    /// each cut treated as starting a lead-in early.
     /// </summary>
     /// <param name="cuts">Cuts from the edit list, in any order.</param>
     /// <param name="durationMs">Source duration in milliseconds.</param>
     /// <param name="leadInMs">How early each cut is treated as starting.</param>
-    /// <param name="keyframesMs">
-    /// Known keyframe timestamps in milliseconds, ascending. May be empty, in
-    /// which case starts are left unsnapped — the caller is expected to have
-    /// probed, and an empty list means the probe failed.
-    /// </param>
     /// <returns>The keep-segments, ordered and non-overlapping.</returns>
     public static IReadOnlyList<KeepSegment> BuildKeepSegments(
         IReadOnlyList<EditCut> cuts,
         long durationMs,
-        long leadInMs,
-        IReadOnlyList<long> keyframesMs)
+        long leadInMs)
     {
         ArgumentNullException.ThrowIfNull(cuts);
-        ArgumentNullException.ThrowIfNull(keyframesMs);
 
         if (durationMs <= 0)
         {
             return Array.Empty<KeepSegment>();
         }
 
-        // Widen every cut outward: earlier at the front by the lead-in, and
-        // later at the back to the next keyframe. Both directions err toward
-        // removing more, never less.
         var widened = new List<KeepSegment>(cuts.Count);
         foreach (var cut in cuts)
         {
@@ -78,7 +97,7 @@ public static class FfconcatBuilder
             }
 
             var start = Math.Clamp(cut.StartMs - leadInMs, 0, durationMs);
-            var end = Math.Clamp(SnapForwardToKeyframe(cut.EndMs, durationMs, keyframesMs), 0, durationMs);
+            var end = Math.Clamp(cut.EndMs, 0, durationMs);
             if (end > start)
             {
                 widened.Add(new KeepSegment(start, end));
@@ -87,8 +106,6 @@ public static class FfconcatBuilder
 
         widened.Sort((a, b) => a.StartMs.CompareTo(b.StartMs));
 
-        // Merge overlaps created by widening — two cuts a second apart can
-        // easily become one after snapping.
         var merged = new List<KeepSegment>(widened.Count);
         foreach (var range in widened)
         {
@@ -102,7 +119,6 @@ public static class FfconcatBuilder
             }
         }
 
-        // The keeps are the complement of the cuts.
         var keeps = new List<KeepSegment>(merged.Count + 1);
         long cursor = 0;
         foreach (var cut in merged)
@@ -124,53 +140,20 @@ public static class FfconcatBuilder
     }
 
     /// <summary>
-    /// Returns the first keyframe at or after <paramref name="ms"/>, or
-    /// <paramref name="ms"/> itself when nothing is known past it.
+    /// Splits each keep-segment into the part that must be re-encoded and the
+    /// part that can be referenced from the original.
     /// </summary>
-    /// <param name="ms">The time to snap.</param>
-    /// <param name="durationMs">Source duration.</param>
-    /// <param name="keyframesMs">Ascending keyframe timestamps.</param>
-    /// <returns>The snapped timestamp.</returns>
-    public static long SnapForwardToKeyframe(long ms, long durationMs, IReadOnlyList<long> keyframesMs)
+    /// <param name="keeps">Keep-segments from <see cref="BuildKeepSegments"/>.</param>
+    /// <param name="keyframesMs">Ascending keyframe timestamps, in milliseconds.</param>
+    /// <returns>The plan, in playback order.</returns>
+    public static IReadOnlyList<PlanEntry> BuildPlan(
+        IReadOnlyList<KeepSegment> keeps,
+        IReadOnlyList<long> keyframesMs)
     {
+        ArgumentNullException.ThrowIfNull(keeps);
         ArgumentNullException.ThrowIfNull(keyframesMs);
 
-        foreach (var keyframe in keyframesMs)
-        {
-            if (keyframe >= ms)
-            {
-                return Math.Min(keyframe, durationMs);
-            }
-        }
-
-        return ms;
-    }
-
-    /// <summary>
-    /// Renders the concat script. The referenced file is written as a bare
-    /// name, so the script has to live in the same directory as the movie:
-    /// ffmpeg rejects absolute entries as unsafe unless invoked with
-    /// <c>-safe 0</c>, which is not ours to add inside Jellyfin.
-    /// </summary>
-    /// <param name="mediaFileName">The movie's file name, without directory.</param>
-    /// <param name="keeps">The ranges to keep.</param>
-    /// <returns>The contents of the .ffconcat file.</returns>
-    public static string Render(string mediaFileName, IReadOnlyList<KeepSegment> keeps)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(mediaFileName);
-        ArgumentNullException.ThrowIfNull(keeps);
-
-        if (Path.IsPathRooted(mediaFileName) || mediaFileName.Contains('/', StringComparison.Ordinal)
-            || mediaFileName.Contains('\\', StringComparison.Ordinal))
-        {
-            throw new ArgumentException(
-                "The concat script must reference the movie by bare file name; ffmpeg rejects paths as unsafe.",
-                nameof(mediaFileName));
-        }
-
-        var text = new StringBuilder();
-        text.Append("ffconcat version 1.0\n");
-
+        var plan = new List<PlanEntry>(keeps.Count);
         foreach (var keep in keeps)
         {
             if (keep.DurationMs <= 0)
@@ -178,21 +161,125 @@ public static class FfconcatBuilder
                 continue;
             }
 
-            text.Append("file ").Append(Quote(mediaFileName)).Append('\n');
-            text.Append("inpoint ").Append(Seconds(keep.StartMs)).Append('\n');
-            text.Append("outpoint ").Append(Seconds(keep.EndMs)).Append('\n');
+            var keyframe = FirstKeyframeIn(keep, keyframesMs);
+
+            if (keyframe is null)
+            {
+                // No keyframe anywhere inside this range, so none of it can be
+                // referenced. Short segments between close cuts land here.
+                plan.Add(new PlanEntry(PlanEntryKind.Rendered, keep.StartMs, keep.EndMs));
+                continue;
+            }
+
+            if (keyframe.Value > keep.StartMs)
+            {
+                plan.Add(new PlanEntry(PlanEntryKind.Rendered, keep.StartMs, keyframe.Value));
+            }
+
+            plan.Add(new PlanEntry(PlanEntryKind.Original, keyframe.Value, keep.EndMs));
+        }
+
+        return plan;
+    }
+
+    /// <summary>
+    /// Finds the first keyframe at or after a segment's start and strictly
+    /// before its end.
+    /// </summary>
+    /// <param name="keep">The segment.</param>
+    /// <param name="keyframesMs">Ascending keyframe timestamps.</param>
+    /// <returns>The keyframe, or null when the segment holds none.</returns>
+    public static long? FirstKeyframeIn(KeepSegment keep, IReadOnlyList<long> keyframesMs)
+    {
+        ArgumentNullException.ThrowIfNull(keyframesMs);
+
+        foreach (var keyframe in keyframesMs)
+        {
+            if (keyframe >= keep.EndMs)
+            {
+                break;
+            }
+
+            if (keyframe >= keep.StartMs)
+            {
+                return keyframe;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Renders the concat script.
+    /// </summary>
+    /// <remarks>
+    /// Every referenced file is written as a bare name, so the script and the
+    /// rendered chunks have to sit in the same directory as the movie: ffmpeg
+    /// rejects absolute entries as unsafe unless invoked with <c>-safe 0</c>,
+    /// which is not ours to add inside Jellyfin. Explicit <c>duration</c>
+    /// directives are included because without them the demuxer reports no
+    /// duration at all for a mixed script.
+    /// </remarks>
+    /// <param name="mediaFileName">The movie's file name, without directory.</param>
+    /// <param name="plan">The plan entries.</param>
+    /// <param name="chunkFileName">Maps a rendered entry to its file name.</param>
+    /// <returns>The contents of the .ffconcat file.</returns>
+    public static string Render(
+        string mediaFileName,
+        IReadOnlyList<PlanEntry> plan,
+        Func<PlanEntry, string> chunkFileName)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(mediaFileName);
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(chunkFileName);
+
+        RequireBareName(mediaFileName, nameof(mediaFileName));
+
+        var text = new StringBuilder();
+        text.Append("ffconcat version 1.0\n");
+
+        foreach (var entry in plan)
+        {
+            if (entry.DurationMs <= 0)
+            {
+                continue;
+            }
+
+            if (entry.Kind == PlanEntryKind.Rendered)
+            {
+                var name = chunkFileName(entry);
+                RequireBareName(name, nameof(chunkFileName));
+                text.Append("file ").Append(Quote(name)).Append('\n');
+                text.Append("duration ").Append(Seconds(entry.DurationMs)).Append('\n');
+            }
+            else
+            {
+                text.Append("file ").Append(Quote(mediaFileName)).Append('\n');
+                text.Append("inpoint ").Append(Seconds(entry.StartMs)).Append('\n');
+                text.Append("outpoint ").Append(Seconds(entry.EndMs)).Append('\n');
+                text.Append("duration ").Append(Seconds(entry.DurationMs)).Append('\n');
+            }
         }
 
         return text.ToString();
     }
 
+    private static void RequireBareName(string name, string paramName)
+    {
+        if (string.IsNullOrEmpty(name)
+            || Path.IsPathRooted(name)
+            || name.Contains('/', StringComparison.Ordinal)
+            || name.Contains('\\', StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "The concat script must reference files by bare name; ffmpeg rejects paths as unsafe.",
+                paramName);
+        }
+    }
+
     private static string Seconds(long ms) =>
         (ms / 1000.0).ToString("0.###", CultureInfo.InvariantCulture);
 
-    /// <summary>
-    /// Single-quotes a file name for the concat demuxer, which treats a
-    /// quoted string as literal except for the quote itself.
-    /// </summary>
     private static string Quote(string name) =>
         "'" + name.Replace("'", @"'\''", StringComparison.Ordinal) + "'";
 }

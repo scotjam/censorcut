@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Database.Implementations.Enums;
+using Jellyfin.Plugin.CensorCut.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.MediaSegments;
 using MediaBrowser.Controller.Persistence;
@@ -62,6 +63,15 @@ public class CensorCutSegmentProvider : IMediaSegmentProvider
     {
         var empty = Task.FromResult<IReadOnlyList<MediaSegmentDto>>(Array.Empty<MediaSegmentDto>());
 
+        var config = CensorCutPlugin.Instance?.Configuration;
+        if (config is null || config.Mode != CensorCutMode.ClientSegments)
+        {
+            // Server-side mode already delivers a cut stream. Reporting
+            // segments as well would make the client skip forward inside
+            // footage that had been cut already, losing wanted scenes.
+            return empty;
+        }
+
         var item = _itemRepository.RetrieveItem(request.ItemId);
         if (item is null)
         {
@@ -74,8 +84,7 @@ public class CensorCutSegmentProvider : IMediaSegmentProvider
             return empty;
         }
 
-        var config = CensorCutPlugin.Instance?.Configuration;
-        var profile = list.PickProfile(config?.ProfileId);
+        var profile = list.PickProfile(config.ProfileId);
         if (profile is null || profile.Cuts.Count == 0)
         {
             _logger.LogWarning(
@@ -84,8 +93,8 @@ public class CensorCutSegmentProvider : IMediaSegmentProvider
             return empty;
         }
 
-        var segmentType = config?.SegmentType ?? MediaSegmentType.Commercial;
-        var leadInMs = config?.LeadInOverrideMs is > 0
+        var segmentType = config.SegmentType;
+        var leadInMs = config.LeadInOverrideMs > 0
             ? config.LeadInOverrideMs
             : profile.LeadInMs;
 

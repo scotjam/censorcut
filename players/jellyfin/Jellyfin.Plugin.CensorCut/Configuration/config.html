@@ -18,16 +18,38 @@
                         reports its cuts as media segments so clients skip them. The film itself is
                         never modified.
                     </p>
-                    <p class="fieldDescription" style="margin-top:1em;">
-                        <strong>Important:</strong> the skip happens in the client, not on the
-                        server. A client that does not support automatic segment skipping will play
-                        the film uncut. Where that matters, export an encoded copy from the
-                        CensorCut app instead.
-                    </p>
                 </div>
 
                 <div class="selectContainer">
-                    <label class="selectLabel" for="SegmentType">Report cuts as</label>
+                    <label class="selectLabel" for="Mode">Where cutting happens</label>
+                    <select is="emby-select" id="Mode" name="Mode" class="emby-select">
+                        <option value="ServerSide">On the server (recommended)</option>
+                        <option value="ClientSegments">In the client (media segments)</option>
+                    </select>
+                    <div class="fieldDescription">
+                        <strong>On the server</strong> adds a "Censored" version whose stream is
+                        already cut, so it works on every client and cannot be bypassed. It always
+                        transcodes, so it costs CPU while playing.<br />
+                        <strong>In the client</strong> reports the cuts as skippable segments. It
+                        allows direct play, but a client without automatic skipping plays the film
+                        <em>uncut</em> — it fails open.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="KeyframeSearchWindowSeconds">Keyframe search window (s)</label>
+                    <input is="emby-input" type="number" id="KeyframeSearchWindowSeconds"
+                           name="KeyframeSearchWindowSeconds" min="1" step="1" />
+                    <div class="fieldDescription">
+                        Server mode only. Playback has to resume on a keyframe, so each cut ends at
+                        the first keyframe after it — never before, which would replay the scene
+                        being removed. This bounds how far ahead to look; if no keyframe is found
+                        within it, no censored version is offered rather than an unsafe one.
+                    </div>
+                </div>
+
+                <div class="selectContainer">
+                    <label class="selectLabel" for="SegmentType">Report cuts as (client mode only)</label>
                     <select is="emby-select" id="SegmentType" name="SegmentType" class="emby-select">
                         <option value="Commercial">Commercial</option>
                         <option value="Intro">Intro</option>
@@ -78,6 +100,8 @@
                 .addEventListener('pageshow', function () {
                     Dashboard.showLoadingMsg();
                     ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        document.querySelector('#Mode').value = config.Mode || 'ServerSide';
+                        document.querySelector('#KeyframeSearchWindowSeconds').value = config.KeyframeSearchWindowSeconds || 30;
                         document.querySelector('#SegmentType').value = config.SegmentType || 'Commercial';
                         document.querySelector('#ProfileId').value = config.ProfileId || '';
                         document.querySelector('#LeadInOverrideMs').value = config.LeadInOverrideMs || 0;
@@ -90,6 +114,8 @@
                     e.preventDefault();
                     Dashboard.showLoadingMsg();
                     ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        config.Mode = document.querySelector('#Mode').value;
+                        config.KeyframeSearchWindowSeconds = parseInt(document.querySelector('#KeyframeSearchWindowSeconds').value, 10) || 30;
                         config.SegmentType = document.querySelector('#SegmentType').value;
                         config.ProfileId = document.querySelector('#ProfileId').value;
                         config.LeadInOverrideMs = parseInt(document.querySelector('#LeadInOverrideMs').value, 10) || 0;

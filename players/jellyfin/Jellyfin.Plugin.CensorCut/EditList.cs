@@ -53,7 +53,7 @@ public sealed class EditProfile
 
     /// <summary>Gets the cuts in this profile.</summary>
     [JsonPropertyName("cuts")]
-    public IList<EditCut> Cuts { get; init; } = new List<EditCut>();
+    public List<EditCut> Cuts { get; init; } = new List<EditCut>();
 }
 
 /// <summary>
@@ -91,7 +91,7 @@ public sealed class EditList
 
     /// <summary>Gets the profiles held in this file.</summary>
     [JsonPropertyName("profiles")]
-    public IList<EditProfile> Profiles { get; init; } = new List<EditProfile>();
+    public List<EditProfile> Profiles { get; init; } = new List<EditProfile>();
 
     /// <summary>
     /// Builds the edit list path for a media file.

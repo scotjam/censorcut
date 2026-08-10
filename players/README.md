@@ -10,19 +10,15 @@ profile you have generated.
 
 ## Read this before relying on it
 
-A shortcut is a convenience, not an enforcement mechanism. Two things it does
-not do:
+**The original stays playable.** It sits right there, uncut, and opening it
+directly — in a player without the script, or by browsing to the file — plays
+the whole film. A shortcut changes what a *player* does; it does not change
+what is on disk. If the point is handing a child a device unsupervised, export
+an encoded copy instead: that file is censored no matter what opens it.
 
-- **The original stays playable.** It sits right there, uncut, and opening it
-  in anything without the plugin plays the whole film. If the point is handing
-  a child a device unsupervised, export an encoded copy instead — that file is
-  censored no matter what opens it.
-- **Jellyfin skipping happens in the client.** The server hands clients a list
-  of segments; a client that does not support automatic skipping plays the
-  film uncut. This fails *open*. Check your clients before trusting it.
-
-VLC is the stronger of the two: the script does the seeking itself, so it does
-not depend on client behaviour.
+Within a configured player, though, the cutting is not optional. Jellyfin cuts
+on the server by default, so no client can bypass it, and the VLC script does
+its own seeking rather than trusting playlist options.
 
 ## VLC
 
@@ -56,7 +52,7 @@ lua vlc/test_censorcut.lua
 
 ## Jellyfin
 
-Requires Jellyfin 10.10 or newer (media segments).
+Requires Jellyfin 10.10 or newer.
 
 ```
 cd jellyfin/Jellyfin.Plugin.CensorCut
@@ -65,15 +61,53 @@ dotnet build -c Release
 
 Copy the resulting `bin/Release/net9.0/Jellyfin.Plugin.CensorCut.dll` into a
 `plugins/CensorCut/` folder in your Jellyfin data directory and restart the
-server. Configure it under *Dashboard → Plugins → CensorCut*:
+server. Configure it under *Dashboard → Plugins → CensorCut*.
 
-- **Report cuts as** — Jellyfin has no "censored" segment type, so cuts borrow
-  one of its five. `Commercial` is the default because clients auto-skip it
-  most consistently.
+### Server-side mode (default)
+
+A movie with an edit list gains a second version, **Censored — Age N**, in the
+player's version picker. Its stream is cut by the server's own ffmpeg, so it
+plays cut on every client, including ones that have never heard of media
+segments. Direct play and direct stream are refused for that version, which is
+what makes it impossible to bypass — and also means it always transcodes, so
+it costs CPU while playing.
+
+The plugin writes a small `.censorcut.ffconcat` script beside each movie listing
+the ranges to keep. It has to live there: ffmpeg rejects absolute paths inside a
+concat script as unsafe, and `-safe 0` is not ours to add inside Jellyfin. **The
+media directory must be writable.** If it is not, no censored version is offered
+and the reason is logged.
+
+Resume points land on a keyframe. A concat `inpoint` that is not on one rewinds
+to the *preceding* keyframe, which would replay the end of the scene being cut,
+so each cut is extended forward to the next keyframe instead. That can discard a
+little wanted footage after a cut — in practice often none, because cuts tend to
+end at scene changes and that is exactly where encoders put keyframes. If no
+keyframe is found within the search window, the censored version is withheld
+rather than offered unsafely.
+
+### Client-side mode
+
+Reports the cuts as media segments and lets the client skip them. The original
+can still direct play, so it is cheaper — but **a client without automatic
+skipping plays the film uncut**. It fails open. Only the segment type and
+lead-in settings apply in this mode.
+
+Exactly one mode is active at a time. Running both would have the client skip
+forward inside a stream the server had already cut, jumping past wanted scenes.
+
+### Settings
+
+- **Where cutting happens** — server-side or client-side, as above.
+- **Keyframe search window** — how far past a cut to look for the resume
+  keyframe. Server mode only.
+- **Report cuts as** — which of Jellyfin's five segment types the cuts borrow;
+  it has no "censored" type. Client mode only.
 - **Age profile** — which profile to apply, e.g. `age-7`. Empty uses each
-  file's default.
-- **Lead-in override** — how early each segment starts. Raise it if a client
-  reacts slowly and the first moments of a cut slip through.
+  file's default. An unknown id falls back to the strictest profile, never
+  to none.
+- **Lead-in override** — how early each cut is treated as starting. 0 uses the
+  value stored in the edit list.
 
 Tests:
 

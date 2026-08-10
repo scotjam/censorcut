@@ -40,6 +40,7 @@ private slots:
     void onOpenFile();
     void onSaveSidecar();
     void onExportProject();
+    void onCreateShortcut();
     void onForgetFeedback();
     void onSetEditsServerUrl();
     void onPullEditsFromServer();

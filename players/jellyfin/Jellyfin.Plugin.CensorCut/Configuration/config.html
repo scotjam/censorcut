@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>CensorCut</title>
+</head>
+<body>
+<div id="CensorCutConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-controller="__plugin/CensorCutConfigPage.js">
+    <div data-role="content">
+        <div class="content-primary">
+            <form id="CensorCutConfigForm">
+                <div class="verticalSection">
+                    <div class="sectionTitleContainer flex align-items-center">
+                        <h2 class="sectionTitle">CensorCut</h2>
+                    </div>
+                    <p class="fieldDescription">
+                        Reads <code>&lt;movie&gt;.censorcut-edl.json</code> beside each movie and
+                        reports its cuts as media segments so clients skip them. The film itself is
+                        never modified.
+                    </p>
+                    <p class="fieldDescription" style="margin-top:1em;">
+                        <strong>Important:</strong> the skip happens in the client, not on the
+                        server. A client that does not support automatic segment skipping will play
+                        the film uncut. Where that matters, export an encoded copy from the
+                        CensorCut app instead.
+                    </p>
+                </div>
+
+                <div class="selectContainer">
+                    <label class="selectLabel" for="SegmentType">Report cuts as</label>
+                    <select is="emby-select" id="SegmentType" name="SegmentType" class="emby-select">
+                        <option value="Commercial">Commercial</option>
+                        <option value="Intro">Intro</option>
+                        <option value="Outro">Outro</option>
+                        <option value="Recap">Recap</option>
+                        <option value="Preview">Preview</option>
+                        <option value="Unknown">Unknown</option>
+                    </select>
+                    <div class="fieldDescription">
+                        Jellyfin has no "censored" segment type, so cuts borrow one. Commercial is
+                        usually the type clients auto-skip most reliably.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="ProfileId">Age profile</label>
+                    <input is="emby-input" type="text" id="ProfileId" name="ProfileId" />
+                    <div class="fieldDescription">
+                        Which profile to apply, for example <code>age-7</code>. Leave empty to use
+                        the one named by each edit list. If the id is not found, the strictest
+                        profile in the file is used rather than none.
+                    </div>
+                </div>
+
+                <div class="inputContainer">
+                    <label class="inputLabel inputLabelUnfocused" for="LeadInOverrideMs">Lead-in override (ms)</label>
+                    <input is="emby-input" type="number" id="LeadInOverrideMs" name="LeadInOverrideMs" min="0" step="10" />
+                    <div class="fieldDescription">
+                        How early each segment starts, so a slow client cannot show the opening
+                        moments of a cut. 0 uses the value stored in the edit list.
+                    </div>
+                </div>
+
+                <div>
+                    <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                        <span>Save</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        (function () {
+            var pluginId = '3f2b6c14-9a57-4e0b-8d21-6c5b0a7e4d92';
+
+            document.querySelector('#CensorCutConfigPage')
+                .addEventListener('pageshow', function () {
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        document.querySelector('#SegmentType').value = config.SegmentType || 'Commercial';
+                        document.querySelector('#ProfileId').value = config.ProfileId || '';
+                        document.querySelector('#LeadInOverrideMs').value = config.LeadInOverrideMs || 0;
+                        Dashboard.hideLoadingMsg();
+                    });
+                });
+
+            document.querySelector('#CensorCutConfigForm')
+                .addEventListener('submit', function (e) {
+                    e.preventDefault();
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        config.SegmentType = document.querySelector('#SegmentType').value;
+                        config.ProfileId = document.querySelector('#ProfileId').value;
+                        config.LeadInOverrideMs = parseInt(document.querySelector('#LeadInOverrideMs').value, 10) || 0;
+                        ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                            Dashboard.processPluginConfigurationUpdateResult(result);
+                        });
+                    });
+                    return false;
+                });
+        })();
+    </script>
+</div>
+</body>
+</html>

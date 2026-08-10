@@ -13,6 +13,7 @@
 #include "core/FeedbackStore.h"
 #include "core/MarkerModel.h"
 #include "core/PlaybackController.h"
+#include "core/EditList.h"
 #include "core/Project.h"
 #include "core/SyncProcess.h"
 #include "core/TrustLedger.h"
@@ -25,6 +26,7 @@
 #include <QSettings>
 #include <QUrl>
 #include <QCloseEvent>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -189,6 +191,12 @@ void MainWindow::buildMenus()
     auto* exportAction = fileMenu->addAction(QStringLiteral("&Export Censored Cut..."));
     exportAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
     connect(exportAction, &QAction::triggered, this, &MainWindow::onExportProject);
+
+    auto* shortcutAction = fileMenu->addAction(QStringLiteral("Create Censor &Shortcut"));
+    shortcutAction->setStatusTip(tr("Write a small edit list beside the movie instead of "
+                                    "encoding a copy. Needs the CensorCut plugin in VLC or "
+                                    "Jellyfin, and leaves the original directly playable."));
+    connect(shortcutAction, &QAction::triggered, this, &MainWindow::onCreateShortcut);
 
     fileMenu->addSeparator();
     auto* forgetAction = fileMenu->addAction(
@@ -539,6 +547,63 @@ void MainWindow::onSaveSidecar()
     } else {
         statusBar()->showMessage(tr("Saved %1").arg(savedTo), 3000);
     }
+}
+
+void MainWindow::onCreateShortcut()
+{
+    if (m_currentMoviePath.isEmpty()) {
+        QMessageBox::information(this, tr("Nothing to do"), tr("Open a movie first."));
+        return;
+    }
+    if (m_playback->duration() <= 0) {
+        QMessageBox::warning(this, tr("Cannot create shortcut"),
+                             tr("The video duration isn't known yet — let it load fully "
+                                "and try again."));
+        return;
+    }
+
+    Project p;
+    p.sourceFile    = m_currentMoviePath;
+    p.sourceHash    = Project::computeSourceHash(m_currentMoviePath);
+    p.durationMs    = m_playback->duration();
+    p.markers       = m_markers->markers();
+    p.activeProfile = AgeProfile::forAge(8);  // matches onExportProject until the age UI lands
+
+    // The shortcut is derived from the markers, so a stale sidecar would leave
+    // the two describing different cuts.
+    if (hasUnsavedChanges()) {
+        const auto reply = QMessageBox::question(
+            this, tr("Save markers first?"),
+            tr("You have unsaved marker changes.\n\n"
+               "Save them before writing the shortcut?"),
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+        if (reply == QMessageBox::Cancel) return;
+        if (reply == QMessageBox::Save)   onSaveSidecar();
+    }
+
+    QString err;
+    const QString written = EditList::writeShortcutFor(p, m_currentMoviePath, &err);
+    if (written.isEmpty()) {
+        QMessageBox::warning(this, tr("Could not create shortcut"),
+                             err.isEmpty() ? tr("Unknown error.") : err);
+        return;
+    }
+
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Censor shortcut created"));
+    box.setIcon(QMessageBox::Information);
+    box.setText(tr("Wrote the edit list for age %1.").arg(p.activeProfile.minAge));
+    box.setInformativeText(
+        tr("%1\n\n"
+           "The original file is untouched and still plays uncut on its own. "
+           "Skipping only happens in a player that has the CensorCut plugin "
+           "installed — see players/README.md. For a copy that is censored "
+           "everywhere, use Export Censored Cut instead.")
+            .arg(QDir::toNativeSeparators(written)));
+    box.exec();
+
+    statusBar()->showMessage(tr("Censor shortcut written to %1")
+                                 .arg(QDir::toNativeSeparators(written)), 8000);
 }
 
 void MainWindow::onExportProject()

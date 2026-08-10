@@ -90,3 +90,7 @@ sync/target/
 sync/Cargo.lock
 edits/target/
 edits/Cargo.lock
+
+# .NET build output (players/jellyfin)
+bin/
+obj/

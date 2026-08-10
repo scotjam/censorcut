@@ -66,6 +66,8 @@ add_library(censorcut_core STATIC
     src/core/AgeProfile.cpp
     src/core/ExportPlan.h
     src/core/ExportPlan.cpp
+    src/core/EditList.h
+    src/core/EditList.cpp
     src/core/FfmpegRunner.h
     src/core/FfmpegRunner.cpp
     src/core/ExportController.h
@@ -153,6 +155,10 @@ if(CENSORCUT_BUILD_TESTS)
         target_link_libraries(test_export_planner PRIVATE censorcut_core Qt6::Test)
         add_test(NAME export_planner COMMAND test_export_planner)
 
+        qt_add_executable(test_edit_list tests/test_edit_list.cpp)
+        target_link_libraries(test_edit_list PRIVATE censorcut_core Qt6::Test)
+        add_test(NAME edit_list COMMAND test_edit_list)
+
         qt_add_executable(test_subtitle_processor tests/test_subtitle_processor.cpp)
         target_link_libraries(test_subtitle_processor PRIVATE censorcut_core Qt6::Test)
         add_test(NAME subtitle_processor COMMAND test_subtitle_processor)
@@ -164,6 +170,18 @@ if(CENSORCUT_BUILD_TESTS)
         qt_add_executable(test_trust_ledger tests/test_trust_ledger.cpp)
         target_link_libraries(test_trust_ledger PRIVATE censorcut_core Qt6::Test)
         add_test(NAME trust_ledger COMMAND test_trust_ledger)
+
+        # The VLC interface script's logic. VLC embeds Lua but ships no
+        # standalone interpreter, so this test only registers when one is
+        # available — it must never be the reason a build fails.
+        find_program(LUA_EXECUTABLE NAMES lua lua5.4 lua5.3 luajit)
+        if(LUA_EXECUTABLE)
+            add_test(NAME vlc_lua_script
+                     COMMAND ${LUA_EXECUTABLE}
+                             ${CMAKE_CURRENT_SOURCE_DIR}/players/vlc/test_censorcut.lua)
+        else()
+            message(STATUS "lua not found — skipping players/vlc script tests")
+        endif()
 
         # The only widget test: TimelineWidget's pixel/time mappings. Compiles
         # the widget directly since the UI sources live in the app target.

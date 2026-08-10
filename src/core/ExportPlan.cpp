@@ -4,11 +4,8 @@
 
 namespace censorcut {
 
-namespace {
-
-/// Returns confirmed marker ranges, clamped to [0, durationMs), with
-/// overlapping/adjacent ranges merged. Sorted by start.
-QList<QPair<qint64, qint64>> mergedCutRanges(const QList<Marker>& markers, qint64 durationMs)
+QList<QPair<qint64, qint64>> mergedConfirmedCuts(const QList<Marker>& markers,
+                                                 qint64 durationMs)
 {
     QList<QPair<qint64, qint64>> ranges;
     ranges.reserve(markers.size());
@@ -36,6 +33,8 @@ QList<QPair<qint64, qint64>> mergedCutRanges(const QList<Marker>& markers, qint6
     return merged;
 }
 
+namespace {
+
 QString msToSeconds(qint64 ms)
 {
     return QString::number(ms / 1000.0, 'f', 3);
@@ -51,7 +50,7 @@ ExportPlan planExport(const Project& project)
         return plan;
     }
 
-    const auto cuts = mergedCutRanges(project.markers, project.durationMs);
+    const auto cuts = mergedConfirmedCuts(project.markers, project.durationMs);
 
     qint64 cursor = 0;
     for (const auto& cut : cuts) {

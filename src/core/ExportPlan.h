@@ -24,6 +24,13 @@ struct ExportPlan {
     [[nodiscard]] bool ok() const { return errorMessage.isEmpty() && !keepSegments.isEmpty(); }
 };
 
+/// Confirmed marker ranges, clamped to [0, durationMs), sorted by start, with
+/// overlapping and adjacent ranges merged. This is the exact complement of
+/// planExport()'s keep segments — exposed so the edit-list writer applies the
+/// same merge rules as the encoder instead of reimplementing them.
+QList<QPair<qint64, qint64>> mergedConfirmedCuts(const QList<Marker>& markers,
+                                                 qint64 durationMs);
+
 /// Compute keep-segments from a project.
 /// - Confirmed markers are merged (overlapping or adjacent ranges collapse).
 /// - Pending and rejected markers are ignored.

@@ -2,6 +2,7 @@
 
 #include "core/AnalysisResult.h"
 
+#include <QElapsedTimer>
 #include <QMainWindow>
 #include <QString>
 #include <memory>
@@ -98,6 +99,12 @@ private:
     bool    m_previewMode = false;
     bool    m_userScrubbing = false;
     qint64  m_lastPlaybackPos = -1;  // for forward-crossing detection in preview
+    /// Seek throttling for scrub drags. A drag emits a scrubbed() per mouse
+    /// move; issuing a libVLC seek for every one floods the demuxer and the
+    /// picture ends up well behind the cursor. We seek at most every
+    /// kScrubSeekIntervalMs and flush the last requested position on release.
+    QElapsedTimer m_scrubSeekThrottle;
+    qint64        m_pendingScrubMs = -1;  // -1 = nothing deferred
     /// J/K/L tracks the user's *intended* rate independently of libVLC,
     /// because libvlc_get_rate can return slightly different floats on
     /// readback (and 0 when paused). Reset to 1.0 by the '1' key.

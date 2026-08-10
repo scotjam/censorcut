@@ -13,6 +13,7 @@
 #include <QtMath>
 
 #include <algorithm>
+#include <cmath>
 
 namespace censorcut {
 
@@ -25,6 +26,21 @@ constexpr int kMarkerBandH    = 28;
 constexpr int kScrubberTop    = 42;
 constexpr int kScrubberH      = 16;
 constexpr int kMinHeight      = kScrubberTop + kScrubberH + 4;  // 62 px
+constexpr int kHandleR        = 7;   // scrubber handle radius
+
+// Maps a fraction to a pixel column and back. The last addressable column is
+// span-1, not span — using span makes the final column unreachable when
+// converting back, which shows up as the playhead never quite reaching the end.
+int fracToPx(double frac, int span)
+{
+    return static_cast<int>(std::lround(std::clamp(frac, 0.0, 1.0) * std::max(0, span - 1)));
+}
+
+double pxToFrac(int px, int span)
+{
+    if (span <= 1) return 0.0;
+    return std::clamp(double(px) / double(span - 1), 0.0, 1.0);
+}
 } // namespace
 
 TimelineWidget::TimelineWidget(QWidget* parent)
@@ -89,15 +105,34 @@ void TimelineWidget::setPendingCutStartMs(qint64 ms)
 qint64 TimelineWidget::xToMs(int x) const
 {
     if (m_viewEndMs <= m_viewStartMs || width() <= 0) return 0;
-    const double frac = std::clamp(double(x) / width(), 0.0, 1.0);
-    return m_viewStartMs + static_cast<qint64>(frac * (m_viewEndMs - m_viewStartMs));
+    return m_viewStartMs
+           + static_cast<qint64>(pxToFrac(x, width()) * (m_viewEndMs - m_viewStartMs));
 }
 
 int TimelineWidget::msToX(qint64 ms) const
 {
     if (m_viewEndMs <= m_viewStartMs) return 0;
-    const double frac = double(ms - m_viewStartMs) / double(m_viewEndMs - m_viewStartMs);
-    return static_cast<int>(std::clamp(frac, 0.0, 1.0) * width());
+    return fracToPx(double(ms - m_viewStartMs) / double(m_viewEndMs - m_viewStartMs), width());
+}
+
+qint64 TimelineWidget::scrubXToMs(int x) const
+{
+    if (m_durationMs <= 0) return 0;
+    const QRect track = scrubTrackRect();
+    return static_cast<qint64>(pxToFrac(x - track.left(), track.width()) * m_durationMs);
+}
+
+int TimelineWidget::msToScrubX(qint64 ms) const
+{
+    if (m_durationMs <= 0) return scrubTrackRect().left();
+    const QRect track = scrubTrackRect();
+    return track.left() + fracToPx(double(ms) / double(m_durationMs), track.width());
+}
+
+qint64 TimelineWidget::miniMapXToMs(int x) const
+{
+    if (m_durationMs <= 0) return 0;
+    return static_cast<qint64>(pxToFrac(x, width()) * m_durationMs);
 }
 
 void TimelineWidget::clampView()
@@ -136,6 +171,13 @@ void TimelineWidget::panBy(qint64 deltaMs)
     update();
 }
 
+QRect TimelineWidget::miniMapRect() const
+{
+    // The drawn strip is only kMiniMapH tall, which is too thin to hit
+    // reliably; the clickable band extends down to the marker band.
+    return QRect(0, kMiniMapTop, width(), kMarkerBandTop - kMiniMapTop);
+}
+
 QRect TimelineWidget::markerBandRect() const
 {
     return QRect(0, kMarkerBandTop, width(), kMarkerBandH);
@@ -144,6 +186,14 @@ QRect TimelineWidget::markerBandRect() const
 QRect TimelineWidget::scrubberRect() const
 {
     return QRect(0, kScrubberTop, width(), kScrubberH);
+}
+
+QRect TimelineWidget::scrubTrackRect() const
+{
+    // Inset by the handle radius so the handle's centre can travel the full
+    // track without the ellipse clipping — no clamping, so the handle always
+    // sits exactly on the position the fill indicates.
+    return scrubberRect().adjusted(kHandleR, 0, -kHandleR, 0);
 }
 
 TimelineWidget::Hit TimelineWidget::hitTest(const QPoint& pos) const
@@ -208,25 +258,29 @@ void TimelineWidget::paintEvent(QPaintEvent*)
     // Scrubber strip — the fat horizontal bar at the bottom dedicated to
     // seeking. Distinct from the marker band so dragging here can never
     // accidentally edit a marker's edge.
+    //
+    // This strip is ALWAYS absolute over the whole film: it reads as a
+    // progress bar, so mapping it through the zoom view would leave the handle
+    // showing position-within-window while looking like position-within-film.
+    // Zoom belongs to the marker band above.
+    const QRect track = scrubTrackRect();
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0x18, 0x1A, 0x20));
     p.drawRoundedRect(scrub.adjusted(2, 0, -2, 0), 4, 4);
 
     if (m_durationMs > 0) {
-        const int playX = std::clamp(msToX(m_positionMs), scrub.left() + 2, scrub.right() - 2);
+        const int playX = msToScrubX(m_positionMs);
         // Filled portion left of the playhead.
-        const QRect fill(scrub.left() + 2, scrub.top() + 2,
-                         std::max(0, playX - scrub.left() - 2), scrub.height() - 4);
+        const QRect fill(track.left(), scrub.top() + 2,
+                         std::max(0, playX - track.left()), scrub.height() - 4);
         p.setBrush(QColor(0x4A, 0x90, 0xE2));
         p.drawRoundedRect(fill, 3, 3);
 
-        // White circular handle so the user can see the grab point.
-        const int handleR = 7;
+        // White circular handle so the user can see the grab point. The track
+        // is inset by kHandleR, so this never needs clamping.
         p.setPen(QPen(QColor(0x2A, 0x60, 0xA0), 1));
         p.setBrush(Qt::white);
-        p.drawEllipse(QPoint(std::clamp(playX, scrub.left() + handleR, scrub.right() - handleR),
-                             scrub.center().y() + 1),
-                      handleR, handleR);
+        p.drawEllipse(QPoint(playX, scrub.center().y() + 1), kHandleR, kHandleR);
     }
 
     // Playhead vertical line through the marker band (helps line up cuts
@@ -237,23 +291,26 @@ void TimelineWidget::paintEvent(QPaintEvent*)
         p.drawLine(x, band.top() - 2, x, band.bottom() + 2);
     }
 
-    // Mini-map / zoom indicator across the very top (3 px high).
-    if (m_durationMs > 0 && (m_viewStartMs > 0 || m_viewEndMs < m_durationMs)) {
+    // Mini-map / zoom indicator across the very top (3 px high). Drawn
+    // whenever we know the duration, because it doubles as a click target for
+    // jumping anywhere in the film while zoomed in.
+    if (m_durationMs > 0) {
         p.setPen(Qt::NoPen);
         p.setBrush(QColor(0x40, 0x44, 0x4C));
         p.drawRect(0, kMiniMapTop, width(), kMiniMapH);
-        const double s = double(m_viewStartMs) / double(m_durationMs);
-        const double e = double(m_viewEndMs)   / double(m_durationMs);
-        const int xs = int(s * width());
-        const int xe = int(e * width());
+
+        const int xs = fracToPx(double(m_viewStartMs) / double(m_durationMs), width());
+        const int xe = fracToPx(double(m_viewEndMs)   / double(m_durationMs), width());
         p.setBrush(QColor(0xFF, 0xC8, 0x4D));
         p.drawRect(xs, kMiniMapTop, std::max(2, xe - xs), kMiniMapH);
 
-        const double zoomLevel = double(m_durationMs)
-                                 / std::max<qint64>(1, m_viewEndMs - m_viewStartMs);
-        p.setPen(QColor(0xFF, 0xC8, 0x4D));
-        p.drawText(width() - 64, kMarkerBandTop + 2,
-                   QStringLiteral("%1× zoom").arg(zoomLevel, 0, 'f', 1));
+        if (m_viewStartMs > 0 || m_viewEndMs < m_durationMs) {
+            const double zoomLevel = double(m_durationMs)
+                                     / std::max<qint64>(1, m_viewEndMs - m_viewStartMs);
+            p.setPen(QColor(0xFF, 0xC8, 0x4D));
+            p.drawText(width() - 64, kMarkerBandTop + 2,
+                       QStringLiteral("%1× zoom").arg(zoomLevel, 0, 'f', 1));
+        }
     }
 }
 
@@ -261,14 +318,37 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event)
 {
     if (event->button() != Qt::LeftButton || m_durationMs <= 0) return;
 
-    const Hit hit = hitTest(event->pos());
-    if (hit.edge != Edge::None) {
-        m_dragId   = hit.id;
-        m_dragEdge = hit.edge;
-        return;  // start an edge-drag; don't scrub
+    const QPoint pos = event->pos();
+
+    // Route by band. Each band has its own coordinate space, so falling
+    // through to a single "scrub anything that isn't a marker edge" branch
+    // seeks to the wrong time — most visibly on the mini-map, which is drawn
+    // in absolute time but was being converted view-relative.
+    if (scrubberRect().contains(pos)) {
+        m_scrubSpace = ScrubSpace::Scrubber;
+        emit scrubBegan();
+        emit scrubbed(scrubXToMs(pos.x()));
+        return;
     }
-    emit scrubBegan();
-    emit scrubbed(xToMs(event->pos().x()));
+
+    if (miniMapRect().contains(pos)) {
+        m_scrubSpace = ScrubSpace::MiniMap;
+        emit scrubBegan();
+        emit scrubbed(miniMapXToMs(pos.x()));
+        return;
+    }
+
+    if (markerBandRect().contains(pos)) {
+        const Hit hit = hitTest(pos);
+        if (hit.edge != Edge::None) {
+            m_dragId   = hit.id;
+            m_dragEdge = hit.edge;
+            return;  // start an edge-drag; don't scrub
+        }
+        m_scrubSpace = ScrubSpace::View;
+        emit scrubBegan();
+        emit scrubbed(xToMs(pos.x()));
+    }
 }
 
 void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
@@ -291,8 +371,16 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
         return;
     }
 
-    if (event->buttons() & Qt::LeftButton) {
-        emit scrubbed(xToMs(event->pos().x()));
+    // A scrub drag stays in whichever space it started in, even once the
+    // cursor wanders out of that band.
+    if (m_scrubSpace != ScrubSpace::None && (event->buttons() & Qt::LeftButton)) {
+        const int x = event->pos().x();
+        switch (m_scrubSpace) {
+            case ScrubSpace::Scrubber: emit scrubbed(scrubXToMs(x));   break;
+            case ScrubSpace::MiniMap:  emit scrubbed(miniMapXToMs(x)); break;
+            case ScrubSpace::View:     emit scrubbed(xToMs(x));        break;
+            case ScrubSpace::None:     break;
+        }
         return;
     }
 
@@ -304,10 +392,12 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
 void TimelineWidget::mouseReleaseEvent(QMouseEvent* event)
 {
     if (event->button() == Qt::LeftButton) {
-        const bool wasEdgeDrag = (m_dragEdge != Edge::None);
         m_dragEdge = Edge::None;
         m_dragId = QUuid();
-        if (!wasEdgeDrag) emit scrubEnded();
+        if (m_scrubSpace != ScrubSpace::None) {
+            m_scrubSpace = ScrubSpace::None;
+            emit scrubEnded();
+        }
     }
 }
 

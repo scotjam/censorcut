@@ -23,11 +23,22 @@ constexpr libvlc_event_e kEvents[] = {
     libvlc_MediaPlayerLengthChanged,
 };
 
+// How often to poll the player's clock while playing. ~24 Hz: fine enough
+// that the playhead reads as smooth, cheap enough to be irrelevant.
+constexpr int kPollIntervalMs = 40;
+
 } // namespace
 
 PlaybackController::PlaybackController(QObject* parent)
     : QObject(parent)
 {
+    m_pollTimer.setInterval(kPollIntervalMs);
+    m_pollTimer.setTimerType(Qt::PreciseTimer);
+    connect(&m_pollTimer, &QTimer::timeout, this, [this]{
+        if (!m_player) return;
+        emitPosition(libvlc_media_player_get_time(m_player));
+    });
+
     // No options passed — VLC will use defaults. Add `--no-video-title-show`
     // here if the title overlay is annoying during playback.
     static const char* args[] = { "--no-video-title-show", "--quiet" };
@@ -46,6 +57,7 @@ PlaybackController::PlaybackController(QObject* parent)
 
 PlaybackController::~PlaybackController()
 {
+    m_pollTimer.stop();
     if (m_player) {
         detachEvents();
         libvlc_media_player_stop(m_player);
@@ -96,6 +108,7 @@ bool PlaybackController::open(const QString& path)
     }
     libvlc_media_player_set_media(m_player, m_media);
     m_durationCached = 0;
+    m_lastEmittedPos = -1;
     emit mediaOpened(path);
     return true;
 }
@@ -128,6 +141,11 @@ void PlaybackController::seek(qint64 ms)
 {
     if (!m_player) return;
     libvlc_media_player_set_time(m_player, ms);
+    // Report the seek target straight away rather than waiting up to a poll
+    // interval for the clock to catch up. Note the player may land on a
+    // nearby keyframe for containers without a fine index; the next poll
+    // corrects the value if so.
+    emitPosition(ms);
 }
 
 void PlaybackController::seekRelative(qint64 deltaMs)
@@ -175,6 +193,13 @@ bool PlaybackController::isPlaying() const
     return m_player && libvlc_media_player_is_playing(m_player) != 0;
 }
 
+void PlaybackController::emitPosition(qint64 ms)
+{
+    if (ms < 0 || ms == m_lastEmittedPos) return;
+    m_lastEmittedPos = ms;
+    emit positionChanged(ms);
+}
+
 void PlaybackController::attachEvents()
 {
     if (!m_player) return;
@@ -201,17 +226,23 @@ void PlaybackController::onVlcEvent(const libvlc_event_t* ev, void* opaque)
     // VLC fires events on its internal thread; marshal to the controller's thread.
     switch (ev->type) {
         case libvlc_MediaPlayerPlaying:
-            QMetaObject::invokeMethod(self, [self]{ emit self->playingStateChanged(true); },
-                                      Qt::QueuedConnection);
+            QMetaObject::invokeMethod(self, [self]{
+                self->m_pollTimer.start();
+                emit self->playingStateChanged(true);
+            }, Qt::QueuedConnection);
             break;
         case libvlc_MediaPlayerPaused:
         case libvlc_MediaPlayerStopped:
-            QMetaObject::invokeMethod(self, [self]{ emit self->playingStateChanged(false); },
-                                      Qt::QueuedConnection);
+            QMetaObject::invokeMethod(self, [self]{
+                self->m_pollTimer.stop();
+                emit self->playingStateChanged(false);
+            }, Qt::QueuedConnection);
             break;
         case libvlc_MediaPlayerEndReached:
-            QMetaObject::invokeMethod(self, [self]{ emit self->endReached(); },
-                                      Qt::QueuedConnection);
+            QMetaObject::invokeMethod(self, [self]{
+                self->m_pollTimer.stop();
+                emit self->endReached();
+            }, Qt::QueuedConnection);
             break;
         case libvlc_MediaPlayerEncounteredError:
             QMetaObject::invokeMethod(self, [self]{
@@ -220,7 +251,7 @@ void PlaybackController::onVlcEvent(const libvlc_event_t* ev, void* opaque)
             break;
         case libvlc_MediaPlayerTimeChanged: {
             const qint64 t = ev->u.media_player_time_changed.new_time;
-            QMetaObject::invokeMethod(self, [self, t]{ emit self->positionChanged(t); },
+            QMetaObject::invokeMethod(self, [self, t]{ self->emitPosition(t); },
                                       Qt::QueuedConnection);
             break;
         }

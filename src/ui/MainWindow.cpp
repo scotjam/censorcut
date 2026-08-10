@@ -247,11 +247,19 @@ void MainWindow::connectSignals()
             });
 
     connect(m_timeline, &TimelineWidget::scrubbed,
-            m_playback.get(), &PlaybackController::seek);
-    connect(m_timeline, &TimelineWidget::scrubBegan,
-            this, [this]{ m_userScrubbing = true; });
-    connect(m_timeline, &TimelineWidget::scrubEnded,
-            this, [this]{ m_userScrubbing = false; });
+            this, &MainWindow::onTimelineScrubbed);
+    connect(m_timeline, &TimelineWidget::scrubBegan, this, [this]{
+        m_userScrubbing = true;
+        m_pendingScrubMs = -1;
+        m_scrubSeekThrottle.invalidate();  // first move of a drag seeks at once
+    });
+    connect(m_timeline, &TimelineWidget::scrubEnded, this, [this]{
+        // Flush whatever the throttle swallowed, so the drag always ends on
+        // the position the user actually released at.
+        if (m_pendingScrubMs >= 0) m_playback->seek(m_pendingScrubMs);
+        m_pendingScrubMs = -1;
+        m_userScrubbing = false;
+    });
 
     connect(m_analyzer, &AnalyzerPanel::fingerprintAvailable,
             this, &MainWindow::onFingerprintAvailable);
@@ -728,6 +736,17 @@ void MainWindow::onMarkEnd()
 
 void MainWindow::onPositionChanged(qint64 ms)
 {
+    // Keep the crossing-detection baseline current even while scrubbing, so a
+    // drag doesn't leave a stale `prev` that reads as a huge forward jump on
+    // the first event after release.
+    const qint64 prev = m_lastPlaybackPos;
+    m_lastPlaybackPos = ms;
+
+    // While dragging, the playhead belongs to the cursor. libVLC's TimeChanged
+    // events lag a seek by a tick or two, so letting them write here yanks the
+    // handle back to a pre-seek time mid-drag.
+    if (m_userScrubbing) return;
+
     m_timeline->setPositionMs(ms);
     m_timeLabel->setText(QStringLiteral("%1 / %2")
                              .arg(formatTime(ms), formatTime(m_playback->duration())));
@@ -745,10 +764,7 @@ void MainWindow::onPositionChanged(qint64 ms)
     //   3. Only on FRESH crossings (prev was outside the cut) — once you're
     //      already inside, we let you keep playing. Combined with (2), this
     //      means landing inside a cut via manual seek is fine.
-    const qint64 prev = m_lastPlaybackPos;
-    m_lastPlaybackPos = ms;
     if (!m_previewMode) return;
-    if (m_userScrubbing) return;
     if (prev < 0 || ms <= prev) return;
     qint64 jumpTo = -1;
     for (const auto& m : m_markers->markers()) {
@@ -776,7 +792,20 @@ void MainWindow::onPlayingStateChanged(bool playing)
 
 void MainWindow::onTimelineScrubbed(qint64 ms)
 {
-    m_playback->seek(ms);
+    // The UI follows the drag immediately — the seek is what gets throttled.
+    m_timeline->setPositionMs(ms);
+    m_timeLabel->setText(QStringLiteral("%1 / %2")
+                             .arg(formatTime(ms), formatTime(m_playback->duration())));
+
+    constexpr qint64 kScrubSeekIntervalMs = 60;
+    if (!m_scrubSeekThrottle.isValid()
+        || m_scrubSeekThrottle.elapsed() >= kScrubSeekIntervalMs) {
+        m_scrubSeekThrottle.start();
+        m_pendingScrubMs = -1;
+        m_playback->seek(ms);
+    } else {
+        m_pendingScrubMs = ms;  // flushed by scrubEnded
+    }
 }
 
 void MainWindow::maybeShowDisclaimer()

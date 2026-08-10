@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QTimer>
 #include <qwindowdefs.h>
 
 // libVLC opaque types — keep <vlc/vlc.h> out of the header to limit blast radius.
@@ -60,12 +61,21 @@ private:
     static void onVlcEvent(const libvlc_event_t* ev, void* opaque);
     void attachEvents();
     void detachEvents();
+    void emitPosition(qint64 ms);
 
     libvlc_instance_t*     m_vlc      = nullptr;
     libvlc_media_player_t* m_player   = nullptr;
     libvlc_media_t*        m_media    = nullptr;
 
     qint64 m_durationCached = 0;
+
+    /// libvlc_MediaPlayerTimeChanged only fires about every 250 ms, which is
+    /// far too coarse for frame-accurate marking — the playhead visibly lags
+    /// the picture. Poll the player while it is actually playing and treat the
+    /// event as a correction source. Deduplicated via m_lastEmittedPos so a
+    /// paused-but-not-yet-stopped poll doesn't spam identical signals.
+    QTimer m_pollTimer;
+    qint64 m_lastEmittedPos = -1;
 };
 
 } // namespace censorcut

@@ -164,5 +164,16 @@ if(CENSORCUT_BUILD_TESTS)
         qt_add_executable(test_trust_ledger tests/test_trust_ledger.cpp)
         target_link_libraries(test_trust_ledger PRIVATE censorcut_core Qt6::Test)
         add_test(NAME trust_ledger COMMAND test_trust_ledger)
+
+        # The only widget test: TimelineWidget's pixel/time mappings. Compiles
+        # the widget directly since the UI sources live in the app target.
+        qt_add_executable(test_timeline_widget
+            tests/test_timeline_widget.cpp
+            src/ui/TimelineWidget.h
+            src/ui/TimelineWidget.cpp
+        )
+        target_link_libraries(test_timeline_widget
+            PRIVATE censorcut_core Qt6::Widgets Qt6::Test)
+        add_test(NAME timeline_widget COMMAND test_timeline_widget)
     endif()
 endif()

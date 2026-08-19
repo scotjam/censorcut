@@ -12,7 +12,12 @@ public:
     explicit VideoSurface(QWidget* parent = nullptr);
 
 protected:
+#if !defined(Q_OS_WIN)
+    // X11 path only: libVLC paints directly into this window, Qt must not.
+    // On Windows the widget is just a backdrop behind libVLC's own child
+    // HWND, and Qt needs its paint machinery to fill the background black.
     QPaintEngine* paintEngine() const override { return nullptr; }
+#endif
     void mousePressEvent(QMouseEvent* event) override;
 };
 

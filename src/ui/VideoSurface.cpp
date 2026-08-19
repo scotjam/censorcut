@@ -10,9 +10,22 @@ VideoSurface::VideoSurface(QWidget* parent)
 {
     // The native window must exist before libVLC can attach.
     setAttribute(Qt::WA_NativeWindow);
+#if defined(Q_OS_WIN)
+    // On Windows libVLC (set_hwnd) creates its own child HWND inside this one
+    // and renders there — this widget is only the backdrop, so Qt may (and
+    // must) paint it. With no background fill the surface shows whatever
+    // stale pixels the screen held until the first video frame arrives; after
+    // the open-time layout shift that was a ghost copy of the transport row
+    // sitting inside the video area, looking like a dead duplicate Play
+    // button for as long as no frame painted over it.
+    setAutoFillBackground(true);
+#else
+    // On X11 libVLC paints directly into this window id — Qt must not fight
+    // it (see also paintEngine() returning null in the header).
     setAttribute(Qt::WA_OpaquePaintEvent);
-    setAttribute(Qt::WA_PaintOnScreen);  // libVLC paints, not Qt
+    setAttribute(Qt::WA_PaintOnScreen);
     setAutoFillBackground(false);
+#endif
 
     // The native HWND would otherwise grab focus on click and swallow key
     // events (spacebar play/pause, arrow seeks, [/]) — all of those go via

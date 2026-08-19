@@ -171,6 +171,13 @@ if(CENSORCUT_BUILD_TESTS)
         target_link_libraries(test_trust_ledger PRIVATE censorcut_core Qt6::Test)
         add_test(NAME trust_ledger COMMAND test_trust_ledger)
 
+        # Seek accuracy against a real decoder. Opt-in: skips itself unless
+        # CENSORCUT_TEST_MEDIA names a video file, so it stays green on a
+        # machine with no media and keeps film paths out of the repo.
+        qt_add_executable(test_playback_seek tests/test_playback_seek.cpp)
+        target_link_libraries(test_playback_seek PRIVATE censorcut_core Qt6::Test)
+        add_test(NAME playback_seek COMMAND test_playback_seek)
+
         # The VLC interface script's logic. VLC embeds Lua but ships no
         # standalone interpreter, so this test only registers when one is
         # available — it must never be the reason a build fails.

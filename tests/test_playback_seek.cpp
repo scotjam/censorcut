@@ -124,6 +124,7 @@ private slots:
     void optimisticPositionIsReportedImmediately();
     void decodedFrameConfirmsTheLandingPoint_data();
     void decodedFrameConfirmsTheLandingPoint();
+    void resumeAfterPausedSeekEngages();
 
 private:
     /// Skips the current test unless media was supplied and opened.
@@ -335,6 +336,29 @@ void TestPlaybackSeek::decodedFrameConfirmsTheLandingPoint()
                                        "settled value was a real decoded PTS; "
                                        "backward or frozen means it was not")
                             .arg(advance)));
+}
+
+void TestPlaybackSeek::resumeAfterPausedSeekEngages()
+{
+    if (!haveMedia()) QSKIP("no CENSORCUT_TEST_MEDIA");
+
+    // Regression sentinel for the --avi-index wedge. With --avi-index=1
+    // ("always fix"), EVERY seek on an AVI triggered an index rebuild that
+    // permanently stalled the input: paused seek then play never engaged
+    // (measured 8+ s dead, confirmed by the user in the GUI), and a playing
+    // seek froze the clock outright. =3 ("fix when necessary") keeps the
+    // repair path for genuinely broken files without touching intact ones.
+    // If this case ever fails, look at the avi-index option first.
+    const qint64 target = static_cast<qint64>(m_durationMs * 0.35);
+    m_pb->seek(target);
+    waitForSettledPosition(m_pb.get());
+    m_pb->play();
+    const bool engaged = waitFor([&]{ return m_pb->isPlaying(); }, 5000);
+    m_pb->pause();
+    spinFor(400);
+    QVERIFY2(engaged,
+             "resume after a paused seek did not engage - the avi-index "
+             "wedge is back (censorcut-repo-ale)");
 }
 
 QTEST_GUILESS_MAIN(TestPlaybackSeek)

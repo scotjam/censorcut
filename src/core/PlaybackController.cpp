@@ -83,15 +83,21 @@ PlaybackController::PlaybackController(QObject* parent)
     //                         on the keyframe (up to ~9 s early on long-GOP
     //                         H.264). beginPausedSeekCorrection() closes that
     //                         gap by walking the decoder to the target.
-    //   --avi-index=1         AVIs with a missing or broken index normally
+    //   --avi-index=3         AVIs with a missing or broken index normally
     //                         raise a "try to fix it?" dialog, which libvlc
     //                         has no provider for — so seeking silently stays
-    //                         broken. 1 = always rebuild the index.
+    //                         broken. 3 = fix when necessary, no dialog.
+    //                         NEVER use 1 ("always fix"): it triggers an
+    //                         index rebuild on EVERY seek that permanently
+    //                         stalls the input — paused-seek-then-play never
+    //                         engages, playing seeks freeze the clock. That
+    //                         one value produced every symptom in
+    //                         censorcut-repo-ale.
     static const char* args[] = {
         "--no-video-title-show",
         "--quiet",
         "--no-input-fast-seek",
-        "--avi-index=1",
+        "--avi-index=3",
     };
     m_vlc = libvlc_new(static_cast<int>(std::size(args)), args);
     if (!m_vlc) {
@@ -231,6 +237,12 @@ void PlaybackController::seek(qint64 ms)
 {
     if (!m_player) return;
     cancelSeekCorrection();
+    // Capture intent BEFORE the seek: a set_time can make the input rebuffer
+    // and read as "not playing" for a while (AVI does), so sampling
+    // isPlaying() later would misclassify a playing seek as a paused one and
+    // start a walk against it — whose give-up path pauses the player,
+    // stranding a user who was watching.
+    const bool wasPlaying = isPlaying();
     m_seekTargetMs = ms;
     libvlc_media_player_set_time(m_player, ms);
 
@@ -242,9 +254,11 @@ void PlaybackController::seek(qint64 ms)
     // the poll timer keeps the clock honest. While paused the demuxer has
     // landed on a keyframe that can sit seconds before the target, and
     // nothing will decode past it on its own — walk it forward.
-    QTimer::singleShot(kSeekSettleMs, this, [this, ms]{
+    QTimer::singleShot(kSeekSettleMs, this, [this, ms, wasPlaying]{
         if (!m_player || ms != m_seekTargetMs) return;   // superseded
-        if (isPlaying()) {
+        if (wasPlaying || isPlaying()) {
+            // A playing pipeline reconciles itself (poll timer); the walk is
+            // only for paused seeks, where nothing else pulls frames.
             emitPosition(libvlc_media_player_get_time(m_player));
         } else {
             beginPausedSeekCorrection();

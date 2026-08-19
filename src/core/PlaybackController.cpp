@@ -50,9 +50,6 @@ constexpr int    kStartTimeoutMs     = 2000;   // play() never engaged → bail
 constexpr int    kCorrectWallCapMs   = 20000;  // hard stop for a dead pipeline
 constexpr int    kCorrectRestReadMs  = 200;    // read-back after the final pause
 
-// Resume watchdog: how long play() waits for is_playing before concluding the
-// input wedged (paused-seek-then-resume does this on AVI) and re-kicking it.
-constexpr int    kResumeKickMs       = 800;
 
 } // namespace
 
@@ -145,7 +142,6 @@ bool PlaybackController::open(const QString& path)
 {
     if (!m_vlc || !m_player) return false;
     cancelSeekCorrection();
-    ++m_playEpoch;             // disarm the resume watchdog; see pause()
 
     // Tear the current input down before attaching new media. set_media on a
     // running player leaves the previous film's last decoded frame on the
@@ -187,28 +183,21 @@ void PlaybackController::play()
     // race window is seek() → play() within kSeekSettleMs).
     cancelSeekCorrection(/*repause=*/false);
     m_seekTargetMs = -1;
-    if (!m_player) return;
-    libvlc_media_player_play(m_player);
+    if (m_player) libvlc_media_player_play(m_player);
 
-    // Resume watchdog. A play issued after a paused seek can wedge — the AVI
-    // input never leaves its buffering limbo and is_playing stays false
-    // indefinitely (measured: 8+ s dead). Re-issuing the seek at the current
-    // position kicks the input thread back to life. Healthy files engage in
-    // well under the delay, so for them this never fires.
-    const int epoch = ++m_playEpoch;
-    QTimer::singleShot(kResumeKickMs, this, [this, epoch]{
-        if (!m_player || epoch != m_playEpoch) return;   // superseded
-        if (isPlaying() || m_correcting) return;
-        const qint64 here = libvlc_media_player_get_time(m_player);
-        if (here >= 0) libvlc_media_player_set_time(m_player, here);
-        libvlc_media_player_play(m_player);
-    });
+    // NO resume watchdog here, deliberately. One was tried — "if not playing
+    // after 800 ms, re-issue set_time(current) and play again" — and it was
+    // measured not to revive a wedged AVI resume, while a seek issued into a
+    // still-starting input is itself the pattern that wedges the AVI demuxer.
+    // In the GUI the first play after open creates the video output, which
+    // can take longer than any reasonable watchdog delay, so the watchdog
+    // fired during healthy startups and wedged them. Insurance that only
+    // pays out by causing the fire is not insurance.
 }
 
 void PlaybackController::pause()
 {
     cancelSeekCorrection();   // repauses as part of the cancel
-    ++m_playEpoch;            // disarm the resume watchdog: the user wants
                               // paused, so "not playing yet" is not a wedge
     if (m_player) libvlc_media_player_set_pause(m_player, 1);
 }
@@ -224,7 +213,6 @@ void PlaybackController::togglePlayPause()
         return;
     }
     if (libvlc_media_player_is_playing(m_player)) {
-        ++m_playEpoch;         // disarm the resume watchdog; see pause()
         libvlc_media_player_set_pause(m_player, 1);
     } else {
         m_seekTargetMs = -1;   // disarm a pending settle walk; see play()
@@ -236,7 +224,6 @@ void PlaybackController::stop()
 {
     cancelSeekCorrection();
     m_seekTargetMs = -1;
-    ++m_playEpoch;             // disarm the resume watchdog; see pause()
     if (m_player) libvlc_media_player_stop(m_player);
 }
 
@@ -289,11 +276,14 @@ void PlaybackController::beginPausedSeekCorrection()
     m_correcting     = true;
     m_correctPhase   = CorrectPhase::Starting;
     m_correctSawMove = false;
-    m_correctKicked  = false;
     m_correctLastMs  = libvlc_media_player_get_time(m_player);
     m_correctMuteWas = libvlc_audio_get_mute(m_player);
     m_correctRateWas = libvlc_media_player_get_rate(m_player);
-    m_correctRateSet = 0.0;   // force the first set_rate in the walk
+    m_correctRateSet = 0.0;   // force the first set_rate in the walk; do NOT
+                              // set a rate before play — a rate queued against
+                              // a paused input scrambles the resume (measured:
+                              // clocks snapping back minutes)
+    m_correctSawBelow = false;
     m_correctWall.start();
     libvlc_audio_set_mute(m_player, 1);
     libvlc_media_player_play(m_player);
@@ -308,15 +298,10 @@ void PlaybackController::onSeekCorrectionTick()
 
     if (m_correctPhase == CorrectPhase::Starting) {
         if (!isPlaying()) {
-            // Same wedge play() guards against: a resume after a paused seek
-            // can leave the input in buffering limbo. One kick — re-issue the
-            // seek and play again — revives it; a second wouldn't.
-            if (!m_correctKicked && m_correctWall.elapsed() > kResumeKickMs) {
-                m_correctKicked = true;
-                libvlc_media_player_set_time(m_player, m_seekTargetMs);
-                libvlc_media_player_play(m_player);
-                return;
-            }
+            // No mid-start kick: re-seeking a still-starting input is the
+            // very pattern that wedges the AVI demuxer, and a kick was
+            // measured not to revive an input that is already wedged. Wait,
+            // then give up and restore the paused state.
             if (m_correctWall.elapsed() > kStartTimeoutMs) {
                 finishSeekCorrection(now);   // play() never engaged
             }
@@ -344,6 +329,7 @@ void PlaybackController::onSeekCorrectionTick()
     if (now != m_correctLastMs) {
         m_correctLastMs  = now;
         m_correctSawMove = true;
+        if (now < m_seekTargetMs) m_correctSawBelow = true;
     }
 
     if (m_correctSawMove && now >= m_seekTargetMs) {
@@ -381,10 +367,25 @@ void PlaybackController::finishSeekCorrection(qint64 finalMs)
     // The pause command is asynchronous, so the clock can creep another frame
     // or two before the pipeline actually stops. Read it back once at rest —
     // this is the value a mark placed here will record.
-    QTimer::singleShot(kCorrectRestReadMs, this, [this]{
-        if (m_player && !m_correcting) {
-            emitPosition(libvlc_media_player_get_time(m_player));
+    //
+    // Overshoot repair: when the demux landing was already exact, the walk
+    // finishes on its very first observed movement — before any rate tick ran
+    // — and the pause's engage latency (measured up to ~1.3 s on mp4) then
+    // overruns at 1×. In exactly that case the walk never saw the clock below
+    // the target, so a plain re-seek lands back on the same (exact) landing.
+    // Never re-seek when the walk approached from below: there the landing is
+    // a keyframe short of the target and re-seeking would undo the walk.
+    const qint64 target   = m_seekTargetMs;
+    const bool   sawBelow = m_correctSawBelow;
+    QTimer::singleShot(kCorrectRestReadMs, this, [this, target, sawBelow]{
+        if (!m_player || m_correcting || target != m_seekTargetMs) return;
+        const qint64 rest = libvlc_media_player_get_time(m_player);
+        if (!sawBelow && rest > target + kApproachWindowMs / 2) {
+            libvlc_media_player_set_time(m_player, target);
+            emitPosition(target);
+            return;
         }
+        emitPosition(rest);
     });
 }
 

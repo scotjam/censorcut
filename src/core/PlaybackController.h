@@ -113,9 +113,8 @@ private:
     float  m_correctRateWas = 1.0f;  ///< playback rate to restore
     double m_correctRateSet = 0.0;   ///< rate the walk last requested
     bool   m_correctSawMove = false; ///< clock movement seen since resume (echo defense)
-    bool   m_correctKicked  = false; ///< walk already tried its one un-wedge kick
+    bool   m_correctSawBelow = false; ///< walk observed a clock value below target
     bool   m_correcting     = false;
-    int    m_playEpoch      = 0;     ///< invalidates stale resume-watchdog shots
 };
 
 } // namespace censorcut

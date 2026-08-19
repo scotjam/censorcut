@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QString>
 #include <QTimer>
@@ -49,6 +50,12 @@ public:
     double rate() const;
     bool   isPlaying() const;
 
+    /// True while a paused seek is still converging on its target (the muted
+    /// micro-play walk). The player reports "playing" during the walk, but it
+    /// is servicing a seek, not user playback — UI logic that reacts to
+    /// forward playback (e.g. preview-mode cut skipping) should stand down.
+    bool   isSeekSettling() const { return m_correcting; }
+
 signals:
     void mediaOpened(const QString& path);
     void durationKnown(qint64 ms);
@@ -63,6 +70,25 @@ private:
     void detachEvents();
     void emitPosition(qint64 ms);
 
+    /// Frame-exact paused seeks. A paused seek positions the demuxer on the
+    /// keyframe at or before the target — up to several seconds early on
+    /// long-GOP encodes — and --no-input-fast-seek does not help, because the
+    /// "decode forward to the target" half of a precise seek only happens
+    /// when something is pulling frames, which a paused pipeline is not.
+    /// Worse, get_time() can keep echoing the requested time while the frame
+    /// on screen is still that early keyframe, so the recorded mark and the
+    /// displayed picture silently disagree. The correction resumes playback
+    /// (muted, fast, slowing near the target) and pauses again the moment the
+    /// advancing clock — which, unlike a paused read, cannot be an echo —
+    /// reaches the target. next_frame stepping was tried first and measured
+    /// to be a no-op on mkv input.
+    void beginPausedSeekCorrection();
+    void onSeekCorrectionTick();
+    void finishSeekCorrection(qint64 finalMs);
+    void cancelSeekCorrection(bool repause = true);
+
+    enum class CorrectPhase { Idle, Starting, Walking };
+
     libvlc_instance_t*     m_vlc      = nullptr;
     libvlc_media_player_t* m_player   = nullptr;
     libvlc_media_t*        m_media    = nullptr;
@@ -76,6 +102,20 @@ private:
     /// paused-but-not-yet-stopped poll doesn't spam identical signals.
     QTimer m_pollTimer;
     qint64 m_lastEmittedPos = -1;
+
+    // Paused-seek correction state (see beginPausedSeekCorrection).
+    QTimer        m_correctTimer;
+    QElapsedTimer m_correctWall;
+    CorrectPhase  m_correctPhase   = CorrectPhase::Idle;
+    qint64 m_seekTargetMs   = -1;    ///< most recent seek() request
+    qint64 m_correctLastMs  = -1;    ///< last clock value the walk observed
+    int    m_correctMuteWas = 0;     ///< audio mute state to restore (-1 = no aout)
+    float  m_correctRateWas = 1.0f;  ///< playback rate to restore
+    double m_correctRateSet = 0.0;   ///< rate the walk last requested
+    bool   m_correctSawMove = false; ///< clock movement seen since resume (echo defense)
+    bool   m_correctKicked  = false; ///< walk already tried its one un-wedge kick
+    bool   m_correcting     = false;
+    int    m_playEpoch      = 0;     ///< invalidates stale resume-watchdog shots
 };
 
 } // namespace censorcut

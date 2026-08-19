@@ -876,7 +876,12 @@ void MainWindow::onPositionChanged(qint64 ms)
     //   3. Only on FRESH crossings (prev was outside the cut) — once you're
     //      already inside, we let you keep playing. Combined with (2), this
     //      means landing inside a cut via manual seek is fine.
+    //   4. Suppress while a paused seek is still settling — the correction
+    //      walk sweeps the clock forward through the GOP, which looks exactly
+    //      like forward playback but is servicing a seek; jumping past a cut
+    //      it crosses would hijack the walk away from the requested frame.
     if (!m_previewMode) return;
+    if (m_playback->isSeekSettling()) return;
     if (prev < 0 || ms <= prev) return;
     qint64 jumpTo = -1;
     for (const auto& m : m_markers->markers()) {

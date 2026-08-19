@@ -1,15 +1,28 @@
 // Seek-accuracy checks that need a real decoder and a real file.
 //
 // The widget tests cover the timeline's coordinate maths, but nothing there
-// touches libVLC, so the seek hardening in PlaybackController — pinned
-// --no-input-fast-seek / --avi-index=1, and the post-seek clock reconcile —
-// had no automated coverage at all. This fills that gap.
+// touches libVLC, so the seek behaviour in PlaybackController had no automated
+// coverage at all. This fills that gap.
 //
 // The test is opt-in: point CENSORCUT_TEST_MEDIA at a video file and it runs,
 // otherwise every case skips. That keeps `ctest` green on a machine with no
 // media (and keeps film paths out of the repo). A long-GOP H.264 or an XviD
 // AVI is the interesting input, because those are exactly the encodes where a
-// fast seek lands seconds away from the requested time.
+// raw demux seek lands seconds away from the requested time.
+//
+// Hard-won caveat, preserved so nobody re-learns it: while paused, libVLC can
+// echo the requested time back through get_time() while the picture on screen
+// is still the preceding keyframe. A test that only reads the clock after a
+// seek therefore passes no matter where the decoder went — the first version
+// of this file did exactly that, and flipping --input-fast-seek on produced
+// byte-identical "0 ms" results. Forcing a frame decode (next_frame) is what
+// makes the clock carry a real PTS; the frame-step probe below exists to keep
+// the other assertions honest.
+//
+// PlaybackController now closes the gap itself: a paused seek is followed by a
+// correction walk that decodes forward until the clock reaches the target
+// (see beginPausedSeekCorrection). These cases assert that the walk converges
+// — landing within a frame or two of the request, never seconds early.
 //
 // Note: no video sink is attached, so libVLC opens its own output window while
 // this runs. That is cosmetic — decoding has to happen for the landing time to
@@ -58,17 +71,42 @@ void spinFor(int ms)
     }
 }
 
-/// A fast seek stops at the keyframe before the target; an exact seek decodes
-/// forward to it. Keyframe intervals on the encodes this app deals with run
-/// from a couple of seconds to ten-plus, while an exact landing should be
-/// within a frame or two. 500 ms sits well clear of both, so this fails loudly
-/// if fast seeking is ever re-enabled without being noisy about a frame of
-/// rounding.
-constexpr qint64 kSeekToleranceMs = 500;
+/// Wait until position() stops moving. The paused-seek correction walks the
+/// decoder forward asynchronously — potentially hundreds of frames on a long
+/// GOP — so "where did the seek land" is only meaningful once the walk is
+/// done. The stability window must exceed the walk's worst internal stall
+/// (~600 ms between re-pokes), or a mid-walk lull reads as convergence.
+qint64 waitForSettledPosition(PlaybackController* pb,
+                              int stableMs = 1500, int capMs = 30000)
+{
+    QElapsedTimer total, sinceChange;
+    total.start();
+    sinceChange.start();
+    qint64 last = pb->position();
+    while (total.elapsed() < capMs) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QThread::msleep(15);
+        const qint64 now = pb->position();
+        if (now != last) {
+            last = now;
+            sinceChange.restart();
+        } else if (sinceChange.elapsed() >= stableMs) {
+            break;
+        }
+    }
+    return last;
+}
 
-/// PlaybackController reads the clock back this long after a seek. Wait
-/// comfortably past it before judging where the player landed.
-constexpr int kSettleWaitMs = 900;
+/// How far a converged paused seek may sit from the requested time.
+///
+/// The correction walk stops at the first decoded frame with PTS >= target,
+/// and its initial probe step can cost one extra frame when the demux landing
+/// was already exact — so the expected drift is [0, ~2 frames]. 100 ms early /
+/// 250 ms late gives every frame rate headroom while sitting far below any
+/// keyframe interval (2–10 s on the encodes this app deals with), so a
+/// keyframe-snapped landing can never pass.
+constexpr qint64 kEarlySlackMs = 100;
+constexpr qint64 kLateSlackMs  = 250;
 
 } // namespace
 
@@ -83,7 +121,7 @@ private slots:
     void seekLandsOnTheRequestedTime_data();
     void seekLandsOnTheRequestedTime();
     void backwardSeekIsAlsoExact();
-    void reportedPositionSettlesToTheClock();
+    void optimisticPositionIsReportedImmediately();
     void decodedFrameConfirmsTheLandingPoint_data();
     void decodedFrameConfirmsTheLandingPoint();
 
@@ -114,8 +152,8 @@ void TestPlaybackSeek::initTestCase()
 
     // Duration arrives via libvlc's LengthChanged, which only fires once the
     // input is running — so start playback, wait for it, then pause. Every
-    // seek case below runs paused, which is also the case where nothing but
-    // the post-seek reconcile reads the clock.
+    // seek case below runs paused, which is exactly the case the correction
+    // walk exists for.
     m_pb->play();
     const bool got = waitFor([this]{ return m_pb->duration() > 0; }, 15000);
     QVERIFY2(got, "duration never became known - is the file playable?");
@@ -129,7 +167,7 @@ void TestPlaybackSeek::initTestCase()
     // player rather than its cold start.
     m_pb->seek(m_durationMs / 20);
     waitFor([this]{ return m_pb->position() > 0; }, 5000);
-    spinFor(kSettleWaitMs);
+    waitForSettledPosition(m_pb.get());
 
     m_ready = true;
     qInfo("media: %s", qPrintable(QFileInfo(m_media).fileName()));
@@ -168,24 +206,17 @@ void TestPlaybackSeek::seekLandsOnTheRequestedTime()
 
     const qint64 target = static_cast<qint64>(m_durationMs * fraction);
     m_pb->seek(target);
-    spinFor(kSettleWaitMs);
-
-    const qint64 landed = m_pb->position();
-    const qint64 delta  = qAbs(landed - target);
-    qInfo("target %lld ms -> clock %lld ms (delta %lld ms)",
+    const qint64 landed = waitForSettledPosition(m_pb.get());
+    const qint64 drift  = landed - target;
+    qInfo("target %lld ms -> settled %lld ms (drift %lld ms)",
           static_cast<long long>(target), static_cast<long long>(landed),
-          static_cast<long long>(delta));
+          static_cast<long long>(drift));
 
-    // Deliberately loose. Measured behaviour: on some containers libVLC
-    // simply echoes the requested time back while paused, so a tight
-    // assertion here would pass no matter where the decoder actually landed
-    // — it would be a placebo. This only catches a seek that was ignored
-    // outright. decodedFrameConfirmsTheLandingPoint() is the case with real
-    // discriminating power.
-    QVERIFY2(delta <= m_durationMs / 10,
-             qPrintable(QStringLiteral("seek appears to have been ignored: "
-                                       "asked %1 ms, clock reads %2 ms")
-                            .arg(target).arg(landed)));
+    QVERIFY2(drift >= -kEarlySlackMs && drift <= kLateSlackMs,
+             qPrintable(QStringLiteral("seek settled %1 ms from the target "
+                                       "(allowed -%2..+%3) - did the "
+                                       "correction walk converge?")
+                            .arg(drift).arg(kEarlySlackMs).arg(kLateSlackMs)));
 }
 
 void TestPlaybackSeek::backwardSeekIsAlsoExact()
@@ -198,30 +229,25 @@ void TestPlaybackSeek::backwardSeekIsAlsoExact()
     const qint64 back = static_cast<qint64>(m_durationMs * 0.20);
 
     m_pb->seek(far);
-    spinFor(kSettleWaitMs);
-    QCOMPARE(qAbs(m_pb->position() - far) <= kSeekToleranceMs, true);
+    qint64 drift = waitForSettledPosition(m_pb.get()) - far;
+    QVERIFY2(drift >= -kEarlySlackMs && drift <= kLateSlackMs,
+             "forward leg missed the target");
 
     m_pb->seek(back);
-    spinFor(kSettleWaitMs);
-    const qint64 delta = qAbs(m_pb->position() - back);
-    qInfo("backward: target %lld ms, delta %lld ms",
-          static_cast<long long>(back), static_cast<long long>(delta));
-    QVERIFY2(delta <= kSeekToleranceMs, "backward seek missed the target");
+    drift = waitForSettledPosition(m_pb.get()) - back;
+    qInfo("backward: target %lld ms, drift %lld ms",
+          static_cast<long long>(back), static_cast<long long>(drift));
+    QVERIFY2(drift >= -kEarlySlackMs && drift <= kLateSlackMs,
+             "backward seek missed the target");
 }
 
-void TestPlaybackSeek::reportedPositionSettlesToTheClock()
+void TestPlaybackSeek::optimisticPositionIsReportedImmediately()
 {
     if (!haveMedia()) QSKIP("no CENSORCUT_TEST_MEDIA");
 
     // seek() reports the requested time straight away so the UI stays
-    // responsive, then re-reads the player's clock once the demuxer has
-    // settled. Capture both to show what the reconcile actually changed.
-    //
-    // This asserts the settled value, not that the two differ: when the seek
-    // is exact they are legitimately identical, and emitPosition() suppresses
-    // a repeat of the same millisecond. So a passing run here means "the
-    // number the UI ends up showing is a true reading", which is the property
-    // marker times depend on — it does not by itself prove the reconcile fired.
+    // responsive; the correction walk then converges on a true reading. Both
+    // halves matter: the first for scrub feel, the second for marker times.
     const qint64 target = static_cast<qint64>(m_durationMs * 0.42);
 
     QSignalSpy spy(m_pb.get(), &PlaybackController::positionChanged);
@@ -230,16 +256,15 @@ void TestPlaybackSeek::reportedPositionSettlesToTheClock()
     spinFor(60);                       // well inside the settle window
     const qint64 optimistic = m_pb->position();
 
-    spinFor(kSettleWaitMs);            // well past it
-    const qint64 settled = m_pb->position();
-
+    const qint64 settled = waitForSettledPosition(m_pb.get());
     qInfo("optimistic %lld ms -> settled %lld ms (%lld emissions)",
           static_cast<long long>(optimistic), static_cast<long long>(settled),
           static_cast<long long>(spy.count()));
 
     QCOMPARE(optimistic, target);
-    QVERIFY2(qAbs(settled - target) <= kSeekToleranceMs,
-             "settled position is not a plausible reading for the requested time");
+    const qint64 drift = settled - target;
+    QVERIFY2(drift >= -kEarlySlackMs && drift <= kLateSlackMs,
+             "settled position is not within a frame or two of the request");
 }
 
 void TestPlaybackSeek::decodedFrameConfirmsTheLandingPoint_data()
@@ -256,44 +281,60 @@ void TestPlaybackSeek::decodedFrameConfirmsTheLandingPoint()
     if (!haveMedia()) QSKIP("no CENSORCUT_TEST_MEDIA");
     QFETCH(double, fraction);
 
-    // Reading the clock straight after a paused seek is not evidence: libVLC
-    // echoes the requested time back, so a keyframe-snapped seek looks
-    // identical to an exact one. Stepping a frame forces a real decode, and
-    // the clock then carries the presentation time of an actual picture — so
-    // this is the reading that can disagree with the request.
     const qint64 target = static_cast<qint64>(m_durationMs * fraction);
     m_pb->seek(target);
-    spinFor(kSettleWaitMs);
-    const qint64 beforeStep = m_pb->position();
+    const qint64 settled = waitForSettledPosition(m_pb.get());
+    const qint64 drift   = settled - target;
 
-    m_pb->stepFrame(+1);
-    spinFor(400);
-    const qint64 afterStep = m_pb->position();
+    // The independent truth check: play briefly, pause, and watch the clock.
+    // A genuine reading advances by roughly the played wall time. A stale
+    // echo snaps BACKWARD by seconds, because playing resumes from where the
+    // decoder really was — which is precisely how the placebo version of this
+    // test was unmasked. (stepFrame would be the subtler probe, but
+    // next_frame is a no-op on mkv AND its queued step requests poison
+    // subsequent seeks, which this test also established the hard way.)
+    // Assert the landing before probing — the probe can only SKIP, never
+    // excuse a bad drift.
+    QVERIFY2(drift >= -kEarlySlackMs && drift <= kLateSlackMs,
+             qPrintable(QStringLiteral("decoded landing sits %1 ms from the "
+                                       "target (allowed -%2..+%3)")
+                            .arg(drift).arg(kEarlySlackMs).arg(kLateSlackMs)));
 
-    const qint64 drift = afterStep - target;
-    qInfo("target %lld | clock %lld | after frame-step %lld | drift %lld ms",
-          static_cast<long long>(target),
-          static_cast<long long>(beforeStep),
-          static_cast<long long>(afterStep),
-          static_cast<long long>(drift));
-
-    // What is actually guaranteed, and why the assertion is one-sided:
+    // The independent truth check: play briefly, pause, read. A genuine clock
+    // advances by roughly the played wall time; a stale echo snaps BACKWARD
+    // by seconds, because playback resumes from where the decoder really was
+    // — which is precisely how the placebo version of this test was unmasked.
     //
-    // On long-GOP H.264 the decoder lands on the keyframe at or before the
-    // target — measured at up to 1.6 s early on a 1080p WEB encode — and
-    // pinning --no-input-fast-seek does NOT change that (verified by flipping
-    // the option and re-running: identical drift). So an "exact landing"
-    // assertion would fail on every long-GOP file and is not something the
-    // code delivers.
-    //
-    // Undershoot is the safe direction for cut marks: landing early means a
-    // mark placed here sits at or before the frame the user saw, so a cut
-    // built from it cannot silently exclude content they meant to keep.
-    // Overshoot would be the dangerous one, so that is what this asserts.
-    QVERIFY2(drift <= kSeekToleranceMs,
-             qPrintable(QStringLiteral("seek landed %1 ms PAST the target - a "
-                                       "mark taken here would sit later than "
-                                       "the frame shown").arg(drift)));
+    // On AVI no probe instrument survives contact with the paused-seek resume
+    // wedge (see the bd issue): the pulse's play never engages, and even
+    // next_frame — which works on a freshly-seeked AVI — is dead once any
+    // play has been attempted, including the correction walk's own. So a
+    // detected wedge SKIPs rather than fails: the drift assertion above still
+    // ran, and the exactness of AVI landings is corroborated by the AVI
+    // index (and by pre-walk frame-step measurements of +1 frame).
+    m_pb->play();
+    const bool engaged = waitFor([&]{ return m_pb->isPlaying(); }, 1200);
+    const bool moved   = waitFor([&]{ return m_pb->position() != settled; },
+                                 engaged ? 3000 : 500);
+    m_pb->pause();
+    spinFor(400);   // let the pause engage and the clock come to rest
+
+    const qint64 after   = m_pb->position();
+    const qint64 advance = after - settled;
+    qInfo("target %lld | settled %lld (drift %lld ms) | probe advance %lld ms",
+          static_cast<long long>(target), static_cast<long long>(settled),
+          static_cast<long long>(drift), static_cast<long long>(advance));
+
+    if (!engaged && !moved) {
+        QSKIP("truth probe unavailable: resume after a paused seek wedges on "
+              "this container (censorcut-repo-ale); drift was still asserted");
+    }
+    QVERIFY2(advance > 0 && advance <= 4000,
+             qPrintable(QStringLiteral("probe moved the clock by %1 ms - a "
+                                       "small positive advance means the "
+                                       "settled value was a real decoded PTS; "
+                                       "backward or frozen means it was not")
+                            .arg(advance)));
 }
 
 QTEST_GUILESS_MAIN(TestPlaybackSeek)

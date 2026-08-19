@@ -113,6 +113,12 @@ bool PlaybackController::open(const QString& path)
 {
     if (!m_vlc || !m_player) return false;
 
+    // Tear the current input down before attaching new media. set_media on a
+    // running player leaves the previous film's last decoded frame on the
+    // video surface until the new one produces a picture, which on a slow
+    // source reads as "the old movie is still open".
+    libvlc_media_player_stop(m_player);
+
     if (m_media) {
         libvlc_media_release(m_media);
         m_media = nullptr;

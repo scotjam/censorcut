@@ -74,6 +74,18 @@ private:
     /// user has placed markers). Reads the sidecar fresh each time.
     bool    hasUnsavedChanges() const;
 
+    /// Offer to save pending marker edits before they are thrown away.
+    /// Returns false if the user chose Cancel, meaning the caller should
+    /// abandon whatever it was about to do. Shared by the close path and
+    /// the open-another-movie path.
+    bool    confirmDiscardUnsavedMarkers();
+
+    /// Return the window to its no-movie-loaded state: stops the player,
+    /// empties the marker model, and clears every widget that still shows
+    /// the outgoing film. Called before a new movie is attached so nothing
+    /// from the previous one can survive the switch.
+    void    clearCurrentMovie();
+
     // Core
     std::unique_ptr<PlaybackController> m_playback;
     MarkerModel*  m_markers      = nullptr;

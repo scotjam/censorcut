@@ -378,19 +378,25 @@ void MainWindow::keyPressEvent(QKeyEvent* event)
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    if (hasUnsavedChanges()) {
-        const auto reply = QMessageBox::question(
-            this, QStringLiteral("Unsaved markers"),
-            QStringLiteral("The marker list differs from the sidecar on disk.\n"
-                           "Save markers before closing?"),
-            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
-        if (reply == QMessageBox::Cancel) {
-            event->ignore();
-            return;
-        }
-        if (reply == QMessageBox::Save) onSaveSidecar();
+    if (!confirmDiscardUnsavedMarkers()) {
+        event->ignore();
+        return;
     }
     event->accept();
+}
+
+bool MainWindow::confirmDiscardUnsavedMarkers()
+{
+    if (!hasUnsavedChanges()) return true;
+
+    const auto reply = QMessageBox::question(
+        this, QStringLiteral("Unsaved markers"),
+        QStringLiteral("The marker list differs from the sidecar on disk.\n"
+                       "Save markers before continuing?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    if (reply == QMessageBox::Cancel) return false;
+    if (reply == QMessageBox::Save) onSaveSidecar();
+    return true;
 }
 
 bool MainWindow::hasUnsavedChanges() const
@@ -414,12 +420,47 @@ bool MainWindow::hasUnsavedChanges() const
     return liveFp != Project::markersFingerprint(loaded->markers);
 }
 
+void MainWindow::clearCurrentMovie()
+{
+    // Stop first: libVLC keeps the last decoded frame on the video surface
+    // until the input is torn down, so without this the outgoing film stays
+    // visible behind whatever comes next.
+    m_playback->stop();
+
+    m_currentMoviePath.clear();
+    m_markers->clear();
+    m_dirty = false;
+    setWindowModified(false);
+    setWindowTitle(QStringLiteral("CensorCut[*]"));
+
+    m_pendingCutStartMs = -1;
+    m_timeline->setPendingCutStartMs(-1);
+    m_timeline->setDurationMs(0);
+    m_timeline->setPositionMs(0);
+    m_timeLabel->setText(QStringLiteral("%1 / %2")
+                             .arg(formatTime(0), formatTime(0)));
+
+    if (m_analyzer) m_analyzer->setMovie(QString(), 0);
+    if (m_fingerprintLabel) {
+        m_fingerprintLabel->setText(QString());
+        m_fingerprintLabel->setToolTip(tr("Content fingerprint of the current movie"));
+    }
+    updateStatusBar();
+}
+
 void MainWindow::onOpenFile()
 {
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open Movie"), {},
         QStringLiteral("Video files (*.mp4 *.mkv *.avi *.mov *.webm *.m4v);;All files (*.*)"));
     if (path.isEmpty()) return;
+
+    // Ask before anything is torn down — the markers belong to the OUTGOING
+    // movie, so onSaveSidecar() has to run while m_currentMoviePath still
+    // points at it.
+    if (!confirmDiscardUnsavedMarkers()) return;
+
+    clearCurrentMovie();
 
     if (!m_playback->open(path)) {
         QMessageBox::warning(this, QStringLiteral("Open failed"),
@@ -501,6 +542,12 @@ void MainWindow::loadProjectFor(const QString& moviePath)
     QString err;
     auto project = Project::loadFromSidecar(sidecar, &err);
     if (!project) {
+        // Clear rather than return: on failure the model would otherwise keep
+        // the PREVIOUS movie's markers, and saving would then write those cuts
+        // into this movie's sidecar.
+        m_markers->clear();
+        m_dirty = false;
+        updateStatusBar();
         QMessageBox::warning(this, QStringLiteral("Sidecar load failed"), err);
         return;
     }
